@@ -9,7 +9,6 @@ const requiredEnv = [
   'LOBBY_CHANNEL_ID',
   'BATCH2_CHANNEL_ID',
   'BATCH3_CHANNEL_ID',
-  'BATCH4_CHANNEL_ID',
 ];
 
 const missing = requiredEnv.filter((k) => !process.env[k] || String(process.env[k]).trim() === '');
@@ -251,5 +250,13 @@ app.view('batch_form_submit', async ({ ack, body, view, client }) => {
     process.exit(1);
   }
 })();
+
+// Global error traps for visibility on Render/production
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
 
 
