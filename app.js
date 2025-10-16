@@ -245,6 +245,15 @@ app.view('batch_form_submit', async ({ ack, body, view, client }) => {
   try {
     await app.start(port);
     console.log(`⚡️ Batch Router Bot is running on port ${port}. Endpoint: /slack/events`);
+
+    // Expose simple health and root endpoints for Render warmups and checks
+    try {
+      app.receiver.app.get('/', (_req, res) => res.status(200).send('ok'));
+      app.receiver.app.get('/health', (_req, res) => res.status(200).send('healthy'));
+      console.log('Health endpoints mounted at / and /health');
+    } catch (e) {
+      console.warn('Could not mount health endpoints', e?.message || e);
+    }
   } catch (err) {
     console.error('Failed to start app', err);
     process.exit(1);
