@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import { App, LogLevel } from '@slack/bolt';
+import pkg from '@slack/bolt';
+const { App, LogLevel } = pkg;
 
 // Validate required envs early for clearer boot failures
 const requiredEnv = [
@@ -90,7 +91,7 @@ app.event('member_joined_channel', async ({ event, client, logger }) => {
         client.chat.postMessage({
           channel: dmChannel,
           text: 'Welcome! Please select your batch below 👇',
-          blocks: [
+            blocks: [
             {
               type: 'section',
               text: { type: 'mrkdwn', text: 'Welcome! Please select your batch below 👇' },
@@ -152,10 +153,6 @@ app.action('open_batch_form', async ({ ack, body, client }) => {
                       text: { type: 'plain_text', text: 'Batch 3' },
                       value: 'batch3',
                     },
-                    {
-                      text: { type: 'plain_text', text: 'Batch 4' },
-                      value: 'batch4',
-                    },
                   ],
                 },
               },
@@ -185,7 +182,6 @@ app.view('batch_form_submit', async ({ ack, body, view, client }) => {
     const map = {
       batch2: process.env.BATCH2_CHANNEL_ID,
       batch3: process.env.BATCH3_CHANNEL_ID,
-      batch4: process.env.BATCH4_CHANNEL_ID,
     };
 
     const targetChannel = map[selected];
