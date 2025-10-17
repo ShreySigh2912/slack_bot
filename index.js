@@ -1,5 +1,5 @@
-import express from 'express';
-import { App, ExpressReceiver, subtype } from '@slack/bolt';
+import pkg from '@slack/bolt';
+const { App, ExpressReceiver } = pkg;
 
 // In-memory state for simple OAuth state verification and DM conversation states
 const oauthStates = new Map(); // state -> timestamp
