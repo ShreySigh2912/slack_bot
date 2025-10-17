@@ -1,14 +1,12 @@
 {
-  "name": "iit-patna-admission-bot",
+  "name": "admission-bot",
   "version": "1.0.0",
-  "description": "IIT Patna Admission Bot: routes users to private batch channels via a modal",
+  "description": "Slack bot to collect name and batch, then invite to batch channels.",
   "type": "module",
-  "main": "app.js",
-  "scripts": { "start": "node app.js" },
-  "engines": { "node": "20.x" },
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
   "dependencies": {
     "@slack/bolt": "^3.18.0",
-    "dotenv": "^16.4.0",
     "express": "^4.19.2"
   }
 }
