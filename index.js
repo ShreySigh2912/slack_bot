@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import pkg from '@slack/bolt';
 import express from 'express';
 const { App } = pkg;
@@ -70,11 +71,11 @@ expressApp.post(
       if (body.type === 'event_callback') {
         console.log(`📩 Event callback received: event_type = "${body.event?.type}"`);
         
-        // Acknowledge immediately to prevent Slack retries
+        // Acknowledge to Slack immediately to prevent retries
         res.status(200).send('');
         
-        // Process event asynchronously with Bolt
-        // We need to create a mock request that Bolt can process
+        // Process the event with Bolt asynchronously
+        // Create proper Node HTTP request/response-like objects
         const mockReq = {
           body: rawBody,
           headers: req.headers,
@@ -83,6 +84,7 @@ expressApp.post(
         };
         
         const mockRes = {
+          statusCode: 200,
           writeHead: () => {},
           end: () => {},
           setHeader: () => {},
@@ -90,14 +92,13 @@ expressApp.post(
         };
 
         try {
-          await app.processEvent({
-            body,
-            ack: async () => {} // Already acknowledged above
-          });
+          // processEvent expects (req, res) parameters
+          await app.processEvent(mockReq, mockRes);
           console.log('✅ Event processed successfully');
         } catch (processErr) {
           console.error('❌ Error processing event:', processErr);
         }
+        
         return;
       }
 
