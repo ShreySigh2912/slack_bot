@@ -210,9 +210,29 @@ app.message(async ({ message, client, logger, event }) => {
 
     const state = dmState.get(userId);
     const text = (message.text || '').trim();
+    const lowerText = text.toLowerCase();
 
     if (!state) {
-      // Not in a flow; ignore politely
+      // Check if user is greeting the bot
+      const greetings = ['hey', 'hello', 'hi', 'hola', 'namaste', 'help', 'start'];
+      const isGreeting = greetings.some(greeting => lowerText.includes(greeting));
+      
+      if (isGreeting) {
+        await dm({
+          client,
+          user: userId,
+          text: 'Hello! How may I help you? 👋',
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: '👋 *Hello! How may I help you?*\n\nI can assist you with joining the right batch channel. Just let me know!' }
+            }
+          ]
+        });
+        return;
+      }
+      
+      // Not in a flow and not a greeting; ignore politely
       return;
     }
 
