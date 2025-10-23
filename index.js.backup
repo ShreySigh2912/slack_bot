@@ -1,6 +1,6 @@
 import pkg from '@slack/bolt';
 import express from 'express';
-const { App } = pkg;
+const { App, ExpressReceiver } = pkg;
 
 // In-memory state for simple OAuth state verification and DM conversation states
 const oauthStates = new Map(); // state -> timestamp
@@ -18,14 +18,56 @@ const {
   PORT
 } = process.env;
 
-// Create Express app
-const expressApp = express();
+// Create a custom ExpressReceiver
+const receiver = new ExpressReceiver({
+  signingSecret: SLACK_SIGNING_SECRET,
+  endpoints: '/slack/events',
+  processBeforeResponse: true
+});
 
-// Create Bolt App (without built-in Express server)
+// Get the Express app from receiver
+const expressApp = receiver.app;
+
+// Add middleware BEFORE Bolt processes requests to handle URL verification explicitly
+// Use raw body parser to preserve body for Bolt's signature verification
+expressApp.use('/slack/events', express.raw({ type: 'application/json' }), (req, res, next) => {
+  try {
+    // Parse the raw body to check for URL verification
+    const rawBody = req.body?.toString('utf8') || '';
+    let body = {};
+    try {
+      body = JSON.parse(rawBody || '{}');
+    } catch (parseErr) {
+      // If parsing fails, let Bolt handle it
+      return next();
+    }
+    
+    // Handle URL verification with JSON response
+    if (body && body.type === 'url_verification' && body.challenge) {
+      console.log('✅ URL verification challenge received:', body.challenge);
+      // Return JSON response as required by Slack
+      return res.status(200).json({ challenge: body.challenge });
+    }
+    
+    // Log event type for debugging
+    if (body && body.type === 'event_callback') {
+      console.log('📩 Event callback received:', body.event?.type);
+    } else if (body && body.type) {
+      console.log('ℹ️ Received Slack event type:', body.type);
+    }
+    
+    // Continue to Bolt's handler (body is still raw for signature verification)
+    next();
+  } catch (err) {
+    console.error('❌ Middleware error:', err);
+    next();
+  }
+});
+
+// Create Bolt App with the custom receiver
 const app = new App({
   token: SLACK_BOT_TOKEN,
-  signingSecret: SLACK_SIGNING_SECRET,
-  processBeforeResponse: true
+  receiver
 });
 
 // Helper to DM a user
@@ -37,85 +79,12 @@ async function dm({ client, user, text, blocks }) {
 }
 
 // Healthcheck route
-expressApp.get('/', (_req, res) => {
+receiver.router.get('/', (_req, res) => {
   res.type('text/plain').send('admission-bot up');
 });
 
-// Slack Events endpoint - handles URL verification and event callbacks
-expressApp.post(
-  '/slack/events',
-  express.raw({ type: 'application/json' }),
-  async (req, res) => {
-    try {
-      // Parse the raw body
-      const rawBody = req.body?.toString('utf8') || '';
-      let body = {};
-      try {
-        body = JSON.parse(rawBody || '{}');
-      } catch (parseErr) {
-        console.error('❌ Failed to parse request body:', parseErr);
-        return res.status(400).json({ error: 'Invalid JSON' });
-      }
-
-      console.log(`📥 Received Slack request: type = "${body.type}"`);
-
-      // 1) Handle URL verification challenge
-      if (body.type === 'url_verification') {
-        console.log('✅ URL verification challenge received:', body.challenge);
-        // CRITICAL: Respond with JSON containing the challenge value
-        return res.status(200).json({ challenge: body.challenge });
-      }
-
-      // 2) Handle event_callback (actual Slack events)
-      if (body.type === 'event_callback') {
-        console.log(`📩 Event callback received: event_type = "${body.event?.type}"`);
-        
-        // Acknowledge immediately to prevent Slack retries
-        res.status(200).send('');
-        
-        // Process event asynchronously with Bolt
-        // We need to create a mock request that Bolt can process
-        const mockReq = {
-          body: rawBody,
-          headers: req.headers,
-          method: 'POST',
-          url: '/slack/events'
-        };
-        
-        const mockRes = {
-          writeHead: () => {},
-          end: () => {},
-          setHeader: () => {},
-          getHeader: () => undefined
-        };
-
-        try {
-          await app.processEvent({
-            body,
-            ack: async () => {} // Already acknowledged above
-          });
-          console.log('✅ Event processed successfully');
-        } catch (processErr) {
-          console.error('❌ Error processing event:', processErr);
-        }
-        return;
-      }
-
-      // 3) Other event types
-      console.log(`ℹ️ Unknown or unsupported event type: "${body.type}"`);
-      res.status(200).send('');
-    } catch (err) {
-      console.error('❌ Error in /slack/events:', err);
-      // Always return 200 to prevent Slack retry loops
-      if (!res.headersSent) {
-        res.status(200).send('');
-      }
-    }
-  }
-);
-
 // Optional: Simple Install link
-expressApp.get('/slack/install', (req, res) => {
+receiver.router.get('/slack/install', (req, res) => {
   try {
     if (!SLACK_CLIENT_ID || !SLACK_REDIRECT_URL) {
       return res.status(500).send('Missing SLACK_CLIENT_ID or SLACK_REDIRECT_URL');
@@ -147,7 +116,7 @@ expressApp.get('/slack/install', (req, res) => {
 });
 
 // Optional: OAuth redirect handler
-expressApp.get('/slack/oauth_redirect', async (req, res) => {
+receiver.router.get('/slack/oauth_redirect', async (req, res) => {
   try {
     const { state, code } = req.query;
     if (!state || typeof state !== 'string' || !oauthStates.has(state)) {
@@ -277,21 +246,20 @@ app.message(async ({ message, client, logger, event }) => {
   }
 });
 
-// Start Express server
-const port = Number(PORT) || 3000;
-expressApp.listen(port, () => {
-  console.log('');
-  console.log('🚀 ========================================');
-  console.log(`✅  admission-bot is RUNNING on port ${port}`);
-  console.log('🚀 ========================================');
-  console.log('');
-  console.log(`📍 Slack Events URL: https://slack-bot-1-5oui.onrender.com/slack/events`);
-  console.log(`🔍 Healthcheck: GET http://localhost:${port}/`);
-  console.log('');
-  console.log('✨ Ready to receive Slack events!');
-  console.log('   - URL verification will respond with JSON');
-  console.log('   - Events will be processed by Bolt handlers');
-  console.log('');
-});
+// Start server
+(async () => {
+  try {
+    const port = Number(PORT) || 3000;
+    await app.start(port);
+    console.log(`✅ admission-bot listening on port ${port}`);
+    console.log(`📍 Slack Events URL: https://slack-bot-1-5oui.onrender.com/slack/events`);
+    console.log(`🔍 Test healthcheck: GET http://localhost:${port}/`);
+    console.log('');
+    console.log('Ready to receive Slack events!');
+  } catch (err) {
+    console.error('❌ Failed to start server:', err);
+    process.exit(1);
+  }
+})();
 
 
