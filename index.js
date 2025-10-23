@@ -74,26 +74,128 @@ expressApp.post(
         // Acknowledge to Slack immediately to prevent retries
         res.status(200).send('');
         
-        // Process the event with Bolt asynchronously
-        // Create proper Node HTTP request/response-like objects
-        const mockReq = {
-          body: rawBody,
-          headers: req.headers,
-          method: 'POST',
-          url: '/slack/events'
-        };
+        // Manually trigger the appropriate handler based on event type
+        const event = body.event;
         
-        const mockRes = {
-          statusCode: 200,
-          writeHead: () => {},
-          end: () => {},
-          setHeader: () => {},
-          getHeader: () => undefined
-        };
-
         try {
-          // processEvent expects (req, res) parameters
-          await app.processEvent(mockReq, mockRes);
+          if (event.type === 'member_joined_channel') {
+            // User joined a channel - start the flow
+            if (!ANNOUNCE_CHANNEL_ID || event.channel !== ANNOUNCE_CHANNEL_ID) {
+              console.log(`⏭️  Ignoring join event - not the announce channel`);
+              return;
+            }
+            const userId = event.user;
+            if (!userId) return;
+            
+            console.log(`👋 User ${userId} joined announce channel - starting flow`);
+            await dm({
+              client: app.client,
+              user: userId,
+              text: 'Welcome! What is your full name?',
+              blocks: [{
+                type: 'section',
+                text: { type: 'mrkdwn', text: '👋 *Welcome!* What is your full name?' }
+              }]
+            });
+            dmState.set(userId, { step: 'askName' });
+            console.log('✅ Welcome message sent');
+          }
+          else if (event.type === 'message' && event.channel_type === 'im') {
+            // Direct message received
+            if (event.subtype || event.bot_id) return; // Ignore bot messages
+            
+            const userId = event.user;
+            if (!userId) return;
+            
+            const state = dmState.get(userId);
+            const text = (event.text || '').trim();
+            const lowerText = text.toLowerCase();
+            
+            console.log(`💬 DM from ${userId}: "${text}"`);
+            
+            if (!state) {
+              // Check if user is greeting the bot
+              const greetings = ['hey', 'hello', 'hi', 'hola', 'namaste', 'help', 'start'];
+              const isGreeting = greetings.some(greeting => lowerText.includes(greeting));
+              
+              if (isGreeting) {
+                console.log(`👋 Greeting detected - starting flow`);
+                await dm({
+                  client: app.client,
+                  user: userId,
+                  text: 'Hello! How may I help you? What is your full name?',
+                  blocks: [{
+                    type: 'section',
+                    text: { type: 'mrkdwn', text: '👋 *Hello! How may I help you?*\n\nLet\'s get you set up. What is your full name?' }
+                  }]
+                });
+                dmState.set(userId, { step: 'askName' });
+                return;
+              }
+              return;
+            }
+            
+            // Handle conversation flow
+            if (state.step === 'askName') {
+              const name = text;
+              if (!name) {
+                await dm({ client: app.client, user: userId, text: 'Please share your full name.' });
+                return;
+              }
+              console.log(`📝 Got name: ${name}`);
+              dmState.set(userId, { step: 'askBatch', name });
+              await dm({
+                client: app.client,
+                user: userId,
+                text: 'Thanks, ' + name + '. Which batch are you in? 2 or 3?',
+                blocks: [{
+                  type: 'section',
+                  text: { type: 'mrkdwn', text: `Thanks, ${name}. Which batch are you in? *2* or *3*?` }
+                }]
+              });
+              return;
+            }
+            
+            if (state.step === 'askBatch') {
+              const normalized = text.replace(/[^0-9]/g, '');
+              let targetChannelId = null;
+              if (normalized === '2') {
+                targetChannelId = BATCH2_CHANNEL_ID || null;
+              } else if (normalized === '3') {
+                targetChannelId = BATCH3_CHANNEL_ID || null;
+              }
+              if (!targetChannelId) {
+                await dm({
+                  client: app.client,
+                  user: userId,
+                  text: 'Please reply with 2 or 3.'
+                });
+                return;
+              }
+              
+              console.log(`🎓 Adding user to batch channel ${targetChannelId}`);
+              try {
+                await app.client.conversations.invite({ channel: targetChannelId, users: userId });
+                await dm({
+                  client: app.client,
+                  user: userId,
+                  text: `✅ You have been invited to <#${targetChannelId}>. Welcome!`
+                });
+                console.log('✅ User invited successfully');
+              } catch (inviteErr) {
+                console.error('❌ Invite failed:', inviteErr);
+                await dm({
+                  client: app.client,
+                  user: userId,
+                  text: 'I could not add you automatically. A moderator will help you shortly.'
+                });
+              } finally {
+                dmState.delete(userId);
+              }
+              return;
+            }
+          }
+          
           console.log('✅ Event processed successfully');
         } catch (processErr) {
           console.error('❌ Error processing event:', processErr);
@@ -175,129 +277,6 @@ expressApp.get('/slack/oauth_redirect', async (req, res) => {
   }
 });
 
-// Event: member_joined_channel in program announcement channel
-app.event('member_joined_channel', async ({ event, client, logger }) => {
-  try {
-    if (!ANNOUNCE_CHANNEL_ID) return;
-    if (event.channel !== ANNOUNCE_CHANNEL_ID) return;
-    const userId = event.user;
-    if (!userId) return;
-    await dm({
-      client,
-      user: userId,
-      text: 'Welcome! What is your full name?',
-      blocks: [
-        {
-          type: 'section',
-          text: { type: 'mrkdwn', text: 'Welcome! What is your full name?' }
-        }
-      ]
-    });
-    dmState.set(userId, { step: 'askName' });
-  } catch (err) {
-    logger.error({ err }, 'member_joined_channel handler error');
-  }
-});
-
-// Event: direct message from a human (no subtype) via IM
-app.message(async ({ message, client, logger, event }) => {
-  try {
-    // Filter only IMs and human messages
-    if (event?.channel_type !== 'im') return;
-    if (message.subtype) return;
-    const userId = message.user;
-    if (!userId) return;
-
-    const state = dmState.get(userId);
-    const text = (message.text || '').trim();
-    const lowerText = text.toLowerCase();
-
-    if (!state) {
-      // Check if user is greeting the bot
-      const greetings = ['hey', 'hello', 'hi', 'hola', 'namaste', 'help', 'start'];
-      const isGreeting = greetings.some(greeting => lowerText.includes(greeting));
-      
-      if (isGreeting) {
-        await dm({
-          client,
-          user: userId,
-          text: 'Hello! How may I help you? 👋',
-          blocks: [
-            {
-              type: 'section',
-              text: { type: 'mrkdwn', text: '👋 *Hello! How may I help you?*\n\nI can assist you with joining the right batch channel. Just let me know!' }
-            }
-          ]
-        });
-        return;
-      }
-      
-      // Not in a flow and not a greeting; ignore politely
-      return;
-    }
-
-    if (state.step === 'askName') {
-      const name = text;
-      if (!name) {
-        await dm({ client, user: userId, text: 'Please share your full name.' });
-        return;
-      }
-      dmState.set(userId, { step: 'askBatch', name });
-      await dm({
-        client,
-        user: userId,
-        text: 'Thanks, ' + name + '. Which batch are you in? 2 or 3?',
-        blocks: [
-          {
-            type: 'section',
-            text: { type: 'mrkdwn', text: `Thanks, ${name}. Which batch are you in? *2* or *3*?` }
-          }
-        ]
-      });
-      return;
-    }
-
-    if (state.step === 'askBatch') {
-      const normalized = text.replace(/[^0-9]/g, '');
-      let targetChannelId = null;
-      if (normalized === '2') {
-        targetChannelId = BATCH2_CHANNEL_ID || null;
-      } else if (normalized === '3') {
-        targetChannelId = BATCH3_CHANNEL_ID || null;
-      }
-      if (!targetChannelId) {
-        await dm({
-          client,
-          user: userId,
-          text: 'Please reply with 2 or 3.'
-        });
-        return;
-      }
-
-      try {
-        await client.conversations.invite({ channel: targetChannelId, users: userId });
-        await dm({
-          client,
-          user: userId,
-          text: `You have been invited to <#${targetChannelId}>. Welcome!`
-        });
-      } catch (inviteErr) {
-        logger.error({ inviteErr, targetChannelId }, 'conversations.invite failed');
-        await dm({
-          client,
-          user: userId,
-          text: 'I could not add you automatically. A moderator will help you shortly.'
-        });
-      } finally {
-        dmState.delete(userId);
-      }
-      return;
-    }
-  } catch (err) {
-    logger.error({ err }, 'message handler error');
-  }
-});
-
 // Start Express server
 const port = Number(PORT) || 3000;
 expressApp.listen(port, () => {
@@ -311,7 +290,8 @@ expressApp.listen(port, () => {
   console.log('');
   console.log('✨ Ready to receive Slack events!');
   console.log('   - URL verification will respond with JSON');
-  console.log('   - Events will be processed by Bolt handlers');
+  console.log('   - Events will be processed manually');
+  console.log('   - Greeting detection enabled');
   console.log('');
 });
 
