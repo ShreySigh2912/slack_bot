@@ -3,9 +3,12 @@ services:
     name: admission-bot
     env: node
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: node server.js
     envVars:
       - key: PORT
         value: 10000
       - key: NODE_ENV
         value: production
+    plan: free
+    region: oregon
+    autoDeploy: true
