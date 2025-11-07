@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import pkg from '@slack/bolt';
 import express from 'express';
+import { fileURLToPath } from 'url';
 const { App } = pkg;
 
 // In-memory state for simple OAuth state verification and DM conversation states
@@ -325,22 +326,27 @@ expressApp.get('/slack/oauth_redirect', async (req, res) => {
   }
 });
 
-// Start Express server
-const port = Number(PORT) || 3000;
-expressApp.listen(port, () => {
-  console.log('');
-  console.log('🚀 ========================================');
-  console.log(`✅  admission-bot is RUNNING on port ${port}`);
-  console.log('🚀 ========================================');
-  console.log('');
-  console.log(`📍 Slack Events URL: https://slack-bot-1-5oui.onrender.com/slack/events`);
-  console.log(`🔍 Healthcheck: GET http://localhost:${port}/`);
-  console.log('');
-  console.log('✨ Ready to receive Slack events!');
-  console.log('   - URL verification will respond with JSON');
-  console.log('   - Events will be processed manually');
-  console.log('   - Greeting detection enabled');
-  console.log('');
-});
+// Export the Express app for server.js
+export default expressApp;
+
+// If this file is run directly, start the server
+if (process.env.NODE_ENV !== 'test' && process.argv[1] === fileURLToPath(import.meta.url)) {
+  const port = Number(PORT) || 3000;
+  expressApp.listen(port, () => {
+    console.log('');
+    console.log('🚀 ========================================');
+    console.log(`✅  admission-bot is RUNNING on port ${port}`);
+    console.log('🚀 ========================================');
+    console.log('');
+    console.log(`📍 Slack Events URL: https://slack-bot-1-5oui.onrender.com/slack/events`);
+    console.log(`🔍 Healthcheck: GET http://localhost:${port}/`);
+    console.log('');
+    console.log('✨ Ready to receive Slack events!');
+    console.log('   - URL verification will respond with JSON');
+    console.log('   - Events will be processed manually');
+    console.log('   - Greeting detection enabled');
+    console.log('');
+  });
+}
 
 
