@@ -6,8 +6,8 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "build": "echo \"No build step required\"",
-    "test": "echo \"No tests configured\""
+    "build": "exit 0",
+    "test": "echo \"No tests configured\" && exit 0"
   },
   "dependencies": {
     "@slack/bolt": "^3.18.0",
