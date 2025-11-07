@@ -158,13 +158,20 @@ expressApp.post(
             
             if (state.step === 'askBatch') {
               const normalized = text.replace(/[^0-9]/g, '');
-              let targetChannelId = null;
+              let targetChannels = [];
+              
               if (normalized === '2') {
-                targetChannelId = BATCH2_CHANNEL_ID || null;
+                if (BATCH2_CHANNEL_ID) targetChannels.push({ id: BATCH2_CHANNEL_ID, name: 'Batch 2' });
               } else if (normalized === '3') {
-                targetChannelId = BATCH3_CHANNEL_ID || null;
+                // Add all Batch 3 channels
+                targetChannels = [
+                  { id: 'C09LF0CBQ15', name: 'program_general_b3' },
+                  { id: 'C09R94C0ABV', name: 'batch3-module-1' },
+                  { id: 'C09RC172W0M', name: 'introduction_batch3' }
+                ];
               }
-              if (!targetChannelId) {
+              
+              if (targetChannels.length === 0) {
                 await dm({
                   client: app.client,
                   user: userId,
@@ -173,15 +180,56 @@ expressApp.post(
                 return;
               }
               
-              console.log(`🎓 Adding user to batch channel ${targetChannelId}`);
-              try {
-                await app.client.conversations.invite({ channel: targetChannelId, users: userId });
-                await dm({
-                  client: app.client,
-                  user: userId,
-                  text: `✅ You have been invited to <#${targetChannelId}>. Welcome!`
-                });
-                console.log('✅ User invited successfully');
+              console.log(`🎓 Adding user to ${targetChannels.length} batch channels`);
+              const results = [];
+              
+              for (const channel of targetChannels) {
+                try {
+                  await app.client.conversations.invite({ 
+                    channel: channel.id, 
+                    users: userId 
+                  });
+                  results.push(`✅ Added to ${channel.name} (<#${channel.id}>)`);
+                } catch (error) {
+                  if (error.data?.error === 'already_in_channel') {
+                    results.push(`ℹ️ Already in ${channel.name} (<#${channel.id}>)`);
+                  } else {
+                    console.error(`Failed to add to ${channel.name}:`, error.data?.error || error.message);
+                    results.push(`❌ Failed to add to ${channel.name} (<#${channel.id}>)`);
+                  }
+                }
+              }
+              
+              await dm({
+                client: app.client,
+                user: userId,
+                text: `*Channel Updates:*\n${results.join('\n')}\n\nWelcome to the community!`,
+                blocks: [
+                  {
+                    type: 'section',
+                    text: {
+                      type: 'mrkdwn',
+                      text: '*Channel Updates:*'
+                    }
+                  },
+                  {
+                    type: 'section',
+                    text: {
+                      type: 'mrkdwn',
+                      text: results.join('\n')
+                    }
+                  },
+                  {
+                    type: 'section',
+                    text: {
+                      type: 'mrkdwn',
+                      text: '\n🎉 *Welcome to the community!* 🎉'
+                    }
+                  }
+                ]
+              });
+              
+              console.log('✅ User invited to all channels');
               } catch (inviteErr) {
                 console.error('❌ Invite failed:', inviteErr);
                 await dm({
