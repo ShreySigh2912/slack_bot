@@ -315,14 +315,47 @@ expressApp.post(
                 }));
                 
               } else if (normalized === '3') {
-                // Get Batch 3 channels from environment variable
-                const batch3Channels = process.env.BATCH3_CHANNEL_IDS ? 
-                  process.env.BATCH3_CHANNEL_IDS.split(',').map(id => id.trim()) : [];
-                
-                targetChannels = batch3Channels.map(id => ({
-                  id,
-                  name: `Batch 3 Channel (${id.substring(0, 6)}...)`
-                }));
+                // Split multiple channel IDs from env variable
+                const batch3Channels = (process.env.BATCH3_CHANNELS || '').split(',').map(id => id.trim()).filter(Boolean);
+
+                if (batch3Channels.length === 0) {
+                  await dm({
+                    client: app.client,
+                    user: userId,
+                    text: 'Batch 3 channels are not configured yet. Please contact support.'
+                  });
+                  return;
+                }
+
+                console.log(`🎓 Adding user to Batch 3 channels: ${batch3Channels.join(', ')}`);
+
+                let successCount = 0;
+                for (const channelId of batch3Channels) {
+                  try {
+                    await app.client.conversations.invite({ channel: channelId, users: userId });
+                    console.log(`✅ Invited to channel ${channelId}`);
+                    successCount++;
+                  } catch (err) {
+                    console.error(`❌ Failed to invite to ${channelId}:`, err);
+                  }
+                }
+
+                if (successCount > 0) {
+                  await dm({
+                    client: app.client,
+                    user: userId,
+                    text: `✅ You've been added to all your Batch 3 channels! Welcome aboard 🎉` 
+                  });
+                } else {
+                  await dm({
+                    client: app.client,
+                    user: userId,
+                    text: '⚠️ I wasn\'t able to add you automatically. A moderator will help you shortly.'
+                  });
+                }
+
+                dmState.delete(userId);
+                return;
               }
               
               if (targetChannels.length === 0) {
