@@ -686,20 +686,40 @@ expressApp.get('/slack/oauth_redirect', async (req, res) => {
   }
 });
 
-// Helper function to set up event handlers
+/**
+ * Helper function to set up event handlers
+ * @param {import('@slack/bolt').App} app - The Bolt app instance
+ */
 function setupEventHandlers(app) {
   // Event: member_joined_channel in program announcement channel
-  // Handle member joined channel event
   app.event('member_joined_channel', async ({ event, client, logger }) => {
     try {
-      if (!ANNOUNCE_CHANNEL_ID) return;
-      if (event.channel !== ANNOUNCE_CHANNEL_ID) return;
+      if (!ANNOUNCE_CHANNEL_ID) {
+        console.warn('ANNOUNCE_CHANNEL_ID not set');
+        return;
+      }
       
-      // Your member joined channel logic here
+      if (event.channel !== ANNOUNCE_CHANNEL_ID) {
+        return; // Not our target channel
+      }
+      
+      // Log the join event
       console.log(`User ${event.user} joined channel ${event.channel}`);
+      
+      // Add your custom logic here when a user joins the channel
+      // For example, you might want to send them a welcome message
+      try {
+        await client.chat.postMessage({
+          channel: event.user,
+          text: `Welcome to the channel! <#${event.channel}>`
+        });
+      } catch (dmError) {
+        console.error('Failed to send welcome message:', dmError);
+      }
       
     } catch (error) {
       console.error('Error in member_joined_channel:', error);
+      // Log the error but don't rethrow to prevent unhandled rejections
     }
   });
 }
@@ -712,23 +732,40 @@ async function shutdown(signal) {
   console.log(`\n🚨 Received ${signal}. Shutting down gracefully...`);
   
   try {
-    await app.stop();
-    console.log('✅ Bolt app stopped');
-    
-    if (server) {
-      server.close(() => {
-        console.log('✅ HTTP server closed');
-        process.exit(0);
-      });
-      
-      // Force close after 5 seconds
-      setTimeout(() => {
-        console.warn('⚠️ Forcing shutdown after timeout');
-        process.exit(1);
-      }, 5000);
-    } else {
-      process.exit(0);
+    // Stop the Bolt app
+    if (app) {
+      try {
+        await app.stop();
+        console.log('✅ Bolt app stopped');
+      } catch (appStopError) {
+        console.error('Error stopping Bolt app:', appStopError);
+      }
     }
+    
+    // Close the HTTP server if it exists
+    if (server) {
+      return new Promise((resolve) => {
+        server.close((err) => {
+          if (err) {
+            console.error('Error closing HTTP server:', err);
+            process.exit(1);
+          }
+          console.log('✅ HTTP server closed');
+          resolve();
+        });
+        
+        // Force close after 5 seconds
+        const forceShutdown = setTimeout(() => {
+          console.warn('⚠️ Forcing shutdown after timeout');
+          process.exit(1);
+        }, 5000);
+        
+        // Clear the timeout if server closes normally
+        server.on('close', () => clearTimeout(forceShutdown));
+      });
+    }
+    
+    process.exit(0);
   } catch (error) {
     console.error('Error during shutdown:', error);
     process.exit(1);
