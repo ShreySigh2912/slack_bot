@@ -303,8 +303,7 @@ expressApp.post(
               let targetChannels = [];
               
               try {
-              
-              if (normalized === '2') {
+                if (normalized === '2') {
                 // Get Batch 2 channels from environment variable
                 const batch2Channels = process.env.BATCH2_CHANNEL_IDS ? 
                   process.env.BATCH2_CHANNEL_IDS.split(',').map(id => id.trim()) : [];
@@ -372,10 +371,25 @@ expressApp.post(
               const results = [];
               let success = false;
               
-              // Process each target channel
-              for (const channel of targetChannels) {
-                // First, ensure the bot is in the channel
-                try {
+              try {
+                // Process each target channel
+                for (const channel of targetChannels) {
+                  // First, ensure the bot is in the channel
+                  try {
+                    await app.client.conversations.join({
+                      channel: channel.id
+                    });
+                  } catch (joinError) {
+                    console.error(`Failed to join channel ${channel.id}:`, joinError.data?.error || joinError.message);
+                  }
+                  
+                  // Then try to invite the user
+                  try {
+                    await app.client.conversations.invite({ 
+                      channel: channel.id, 
+                      users: userId 
+                    });
+                    results.push(`✅ Added to ${channel.name} (<#${channel.id}>)`);
                   await app.client.conversations.join({
                     channel: channel.id
                   });
