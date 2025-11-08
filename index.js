@@ -313,7 +313,18 @@ expressApp.post(
               const results = [];
               let success = false;
               
+              // Process each target channel
               for (const channel of targetChannels) {
+                // First, ensure the bot is in the channel
+                try {
+                  await app.client.conversations.join({
+                    channel: channel.id
+                  });
+                } catch (joinError) {
+                  console.error(`Failed to join channel ${channel.id}:`, joinError.data?.error || joinError.message);
+                }
+                
+                // Then try to invite the user
                 try {
                   await app.client.conversations.invite({ 
                     channel: channel.id, 
@@ -321,13 +332,16 @@ expressApp.post(
                   });
                   results.push(`✅ Added to ${channel.name} (<#${channel.id}>)`);
                   success = true;
-                } catch (error) {
-                  if (error.data?.error === 'already_in_channel') {
+                } catch (inviteError) {
+                  if (inviteError.data?.error === 'already_in_channel') {
                     results.push(`ℹ️ Already in ${channel.name} (<#${channel.id}>)`);
                     success = true;
+                  } else if (inviteError.data?.error === 'channel_not_found' || inviteError.data?.error === 'invalid_channel') {
+                    console.error(`Invalid channel ID: ${channel.id} for ${channel.name}`);
+                    results.push(`⚠️ Could not add to ${channel.name} (invalid channel configuration)`);
                   } else {
-                    console.error(`Failed to add to ${channel.name}:`, error.data?.error || error.message);
-                    results.push(`❌ Failed to add to ${channel.name} (<#${channel.id}>)`);
+                    console.error(`Failed to add to ${channel.name}:`, inviteError.data?.error || inviteError.message);
+                    results.push(`❌ Failed to add to ${channel.name} (${inviteError.data?.error || 'unknown error'})`);
                   }
                 }
               }
