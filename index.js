@@ -39,12 +39,21 @@ const {
 // Create Express app
 const expressApp = express();
 
-// Create Bolt App (without built-in Express server)
-const app = new App({
-  token: SLACK_BOT_TOKEN,
+// Initialize app without token - we'll set it after OAuth
+let app = new App({
   signingSecret: SLACK_SIGNING_SECRET,
-  processBeforeResponse: true
+  processBeforeResponse: true,
+  // Disable token requirement since we'll get it from OAuth
+  authorize: async () => {
+    return {
+      botToken: SLACK_BOT_TOKEN,
+      botId: process.env.BOT_USER_ID
+    };
+  }
 });
+
+// Store installations in memory (use a database in production)
+const installations = new Map();
 
 /**
  * Helper to send a DM to a user with error handling and logging
@@ -505,6 +514,19 @@ const shutdown = async (signal) => {
   }
 };
 
+// OAuth scopes required by the app
+const SCOPES = [
+  'channels:read',
+  'channels:manage',
+  'groups:read',
+  'groups:write',
+  'chat:write',
+  'im:write',
+  'users:read',
+  'channels:join',
+  'channels:manage.invites'
+];
+
 // Complete the OAuth install endpoint
 expressApp.get('/slack/install', (req, res) => {
   try {
@@ -515,26 +537,37 @@ expressApp.get('/slack/install', (req, res) => {
     const state = Math.random().toString(36).substring(2, 15);
     oauthStates.set(state, Date.now());
     
-    const authUrl = `https://slack.com/oauth/v2/authorize?client_id=${SLACK_CLIENT_ID}&scope=${oauthClient.scopes.join(',')}&user_scope=channels:write,groups:write,channels:read,groups:read,chat:write,im:write,users:read&state=${state}&redirect_uri=${encodeURIComponent(SLACK_REDIRECT_URL)}`;
+    const authUrl = `https://slack.com/oauth/v2/authorize?` + new URLSearchParams({
+      client_id: SLACK_CLIENT_ID,
+      scope: SCOPES.join(','),
+      user_scope: 'channels:write,groups:write,channels:read,groups:read,chat:write,im:write,users:read',
+      state: state,
+      redirect_uri: SLACK_REDIRECT_URL
+    });
     
     res.redirect(authUrl);
   } catch (error) {
     console.error('Error in OAuth install:', error);
-    res.status(500).send('Error during OAuth installation');
+    res.status(500).send(`Error during OAuth installation: ${error.message}`);
   }
 });
 
 // OAuth redirect handler
 expressApp.get('/slack/oauth_redirect', async (req, res) => {
   try {
-    const { code, state } = req.query;
+    const { code, state, error } = req.query;
+    
+    // Handle OAuth errors
+    if (error) {
+      throw new Error(`OAuth error: ${error}`);
+    }
     
     if (!code || !state) {
-      return res.status(400).send('Missing code or state parameter');
+      throw new Error('Missing code or state parameter');
     }
     
     if (!oauthStates.has(state)) {
-      return res.status(400).send('Invalid state parameter');
+      throw new Error('Invalid state parameter');
     }
     
     // Clean up used state
@@ -542,12 +575,15 @@ expressApp.get('/slack/oauth_redirect', async (req, res) => {
     
     // Exchange code for token using axios
     const axios = (await import('axios')).default;
-    const response = await axios.get('https://slack.com/api/oauth.v2.access', {
+    const response = await axios.post('https://slack.com/api/oauth.v2.access', null, {
       params: {
         client_id: SLACK_CLIENT_ID,
         client_secret: SLACK_CLIENT_SECRET,
         code,
         redirect_uri: SLACK_REDIRECT_URL
+      },
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
       }
     });
     
@@ -557,36 +593,61 @@ expressApp.get('/slack/oauth_redirect', async (req, res) => {
       throw new Error(result.error || 'Failed to get OAuth token');
     }
     
-    // Initialize the app with the new token
-    const app = new App({
+    // Store the installation (in production, use a database)
+    installations.set(result.team.id, {
+      teamId: result.team.id,
+      botToken: result.access_token,
+      botUserId: result.bot_user_id,
+      installedAt: new Date().toISOString()
+    });
+    
+    // Update the app with the new token
+    app = new App({
       token: result.access_token,
       signingSecret: SLACK_SIGNING_SECRET,
       processBeforeResponse: true
     });
     
-    // Start the app
-    await app.start(process.env.PORT || 3000);
-    
+    // Send success response
     res.send(`
       <html>
+        <head>
+          <title>Installation Successful</title>
+          <style>
+            body { font-family: Arial, sans-serif; text-align: center; padding: 40px; }
+            .success { color: #2EB67D; font-size: 24px; margin: 20px 0; }
+            .info { color: #666; margin: 20px 0; }
+          </style>
+        </head>
         <body>
-          <h1>Success!</h1>
-          <p>You have successfully installed the bot. You can now close this window and start using the bot in your workspace.</p>
+          <h1>🎉 Installation Successful!</h1>
+          <p class="success">Your bot has been added to ${result.team.name}!</p>
+          <p class="info">You can now close this window and start using the bot in your Slack workspace.</p>
           <script>
-            // Close the window after 3 seconds
+            // Close the window after 5 seconds
             setTimeout(() => window.close(), 3000);
           </script>
         </body>
       </html>
     `);
+    
   } catch (error) {
     console.error('OAuth error:', error);
     res.status(500).send(`
       <html>
+        <head>
+          <title>Installation Failed</title>
+          <style>
+            body { font-family: Arial, sans-serif; text-align: center; padding: 40px; }
+            .error { color: #E01E5A; font-size: 24px; margin: 20px 0; }
+            .info { color: #666; margin: 20px 0; }
+          </style>
+        </head>
         <body>
-          <h1>Error</h1>
-          <p>${error.message}</p>
-          <p>Please try again or contact support.</p>
+          <h1>⚠️ Installation Failed</h1>
+          <p class="error">${error.message}</p>
+          <p class="info">Please try again or contact support if the problem persists.</p>
+          <p><a href="/slack/install">Try again</a></p>
         </body>
       </html>
     `);
@@ -640,35 +701,46 @@ export default expressApp;
 
 // If this file is run directly, start the server
 if (process.env.NODE_ENV !== 'test' && process.argv[1] === fileURLToPath(import.meta.url)) {
-  const port = process.env.PORT || 3000;
-  const server = expressApp.listen(port, '0.0.0.0', () => {
-    console.log(`Server is running on port ${port}`);
-    console.log(`OAuth URL: http://localhost:${port}/slack/install`);
-    console.log('Make sure to add this URL to your Slack app configuration:');
-    console.log(`- Redirect URL: http://localhost:${port}/slack/oauth_redirect`);
-    console.log(`🌐 OAuth URL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || `${host}:${port}`}/slack/install`);
-    console.log('🚀 ' + '='.repeat(60));
-    console.log('\n📋 Environment:');
-    console.log(`   - Node.js: ${process.version}`);
-    console.log(`   - NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`   - PID: ${process.pid}`);
-    console.log('\n🔗 Endpoints:');
-    console.log(`   - Healthcheck: GET http://${host}:${port}/`);
-    console.log(`   - Slack Events: POST http://${host}:${port}/slack/events`);
-    console.log(`   - OAuth Install: GET http://${host}:${port}/slack/install`);
-    console.log('\n✨ Ready to receive Slack events!');
-    console.log('\nPress Ctrl+C to stop the server\n');
-  });
-  
-  // Handle server errors
-  server.on('error', (error) => {
-    if (error.code === 'EADDRINUSE') {
-      console.error(`❌ Port ${port} is already in use`);
-    } else {
-      console.error('❌ Server error:', error);
+  let server;
+  try {
+    const port = parseInt(PORT, 10) || 3000;
+    
+    if (isNaN(port) || port < 1 || port > 65535) {
+      throw new Error(`Invalid PORT: ${PORT}. Must be between 1 and 65535`);
     }
+    
+    server = expressApp.listen(port, '0.0.0.0', () => {
+      const address = server.address();
+      const host = address.address === '::' ? 'localhost' : address.address;
+      const port = address.port;
+      
+      console.log('\n' + '='.repeat(60));
+      console.log(`🚀  admission-bot v${process.env.npm_package_version || '1.0.0'}`);
+      console.log(`✅  Server running at http://${host}:${port}`);
+      console.log(`🌐 OAuth URL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || `${host}:${port}`}/slack/install`);
+      console.log('🚀 ' + '='.repeat(60));
+      console.log('\n📋 Environment:');
+      console.log(`   - Node.js: ${process.version}`);
+      console.log(`   - NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`   - PID: ${process.pid}`);
+      console.log('\n🔗 Endpoints:');
+      console.log(`   - Healthcheck: GET http://${host}:${port}/`);
+      console.log(`   - Slack Events: POST http://${host}:${port}/slack/events`);
+      console.log(`   - OAuth Install: GET http://${host}:${port}/slack/install`);
+      console.log('\n✨ Ready to receive Slack events!');
+    });
+    
+    server.on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
+        console.error(`❌ Port ${port} is already in use`);
+      } else {
+        console.error('❌ Server error:', error);
+      }
+      process.exit(1);
+    });
+    
+  } catch (error) {
+    console.error('❌ Failed to start server:', error.message);
     process.exit(1);
-  });
+  }
 }
-
-
