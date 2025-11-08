@@ -279,27 +279,39 @@ expressApp.post(
               let targetChannels = [];
               
               if (normalized === '2') {
-                if (BATCH2_CHANNEL_ID) targetChannels.push({ id: BATCH2_CHANNEL_ID, name: 'Batch 2' });
+                // Get Batch 2 channels from environment variable
+                const batch2Channels = process.env.BATCH2_CHANNEL_IDS ? 
+                  process.env.BATCH2_CHANNEL_IDS.split(',').map(id => id.trim()) : [];
+                
+                targetChannels = batch2Channels.map(id => ({
+                  id,
+                  name: `Batch 2 Channel (${id.substring(0, 6)}...)`
+                }));
+                
               } else if (normalized === '3') {
-                // Add all Batch 3 channels
-                targetChannels = [
-                  { id: 'C09LF0CBQ15', name: 'program_general_b3' },
-                  { id: 'C09R94C0ABV', name: 'batch3-module-1' },
-                  { id: 'C09RC172W0M', name: 'introduction_batch3' }
-                ];
+                // Get Batch 3 channels from environment variable
+                const batch3Channels = process.env.BATCH3_CHANNEL_IDS ? 
+                  process.env.BATCH3_CHANNEL_IDS.split(',').map(id => id.trim()) : [];
+                
+                targetChannels = batch3Channels.map(id => ({
+                  id,
+                  name: `Batch 3 Channel (${id.substring(0, 6)}...)`
+                }));
               }
               
               if (targetChannels.length === 0) {
                 await dm({
                   client: app.client,
                   user: userId,
-                  text: 'Please reply with 2 or 3.'
+                  text: 'Sorry, there was an issue with channel configuration. Please contact an admin for assistance.'
                 });
+                console.error('No target channels configured for batch:', normalized);
                 return;
               }
               
-              console.log(`🎓 Adding user to ${targetChannels.length} batch channels`);
+              console.log(`🎓 Adding user to ${targetChannels.length} batch ${normalized} channels`);
               const results = [];
+              let success = false;
               
               for (const channel of targetChannels) {
                 try {
@@ -308,9 +320,11 @@ expressApp.post(
                     users: userId 
                   });
                   results.push(`✅ Added to ${channel.name} (<#${channel.id}>)`);
+                  success = true;
                 } catch (error) {
                   if (error.data?.error === 'already_in_channel') {
                     results.push(`ℹ️ Already in ${channel.name} (<#${channel.id}>)`);
+                    success = true;
                   } else {
                     console.error(`Failed to add to ${channel.name}:`, error.data?.error || error.message);
                     results.push(`❌ Failed to add to ${channel.name} (<#${channel.id}>)`);
