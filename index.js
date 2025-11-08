@@ -4,9 +4,14 @@ import express from 'express';
 import { fileURLToPath } from 'url';
 const { App } = pkg;
 
+/** @typedef {{ step: 'askName' | 'askBatch', name?: string }} UserState */
+
 // In-memory state for simple OAuth state verification and DM conversation states
+/** @type {Map<string, number>} */
 const oauthStates = new Map(); // state -> timestamp
-const dmState = new Map(); // userId -> { step: 'askName' | 'askBatch', name?: string }
+
+/** @type {Map<string, UserState>} */
+const dmState = new Map();
 
 // Validate required environment variables
 const requiredEnvVars = [
@@ -40,13 +45,16 @@ const {
 const expressApp = express();
 
 // Initialize the app with minimal configuration
+/** @type {import('@slack/bolt').App} */
 let app = new App({
   signingSecret: SLACK_SIGNING_SECRET,
   processBeforeResponse: true,
   // We'll set the token after OAuth flow completes
   token: undefined,
   // Custom authorize function that will be used after OAuth
-  authorize: async () => {
+  /** @type {import('@slack/bolt').Authorize} */
+  authorize: async ({ teamId, enterpriseId, isEnterpriseInstall }) => {
+    // In a production app, you'd want to look up the installation by team/enterprise ID
     const installation = Array.from(installations.values())[0]; // Get first installation
     if (!installation) {
       throw new Error('No installation found. Please complete OAuth flow first.');
@@ -59,6 +67,7 @@ let app = new App({
 });
 
 // Store installations in memory (use a database in production)
+/** @type {Map<string, { botToken: string, botUserId: string, teamId: string, installedAt: string }>} */
 const installations = new Map();
 
 /**
@@ -363,51 +372,51 @@ expressApp.post(
                 }
               }
               
-              await dm({
-                client: app.client,
-                user: userId,
-                text: `*Channel Updates:*\n${results.join('\n')}\n\nWelcome to the community!`,
-                blocks: [
-                  {
-                    type: 'section',
-                    text: {
-                      type: 'mrkdwn',
-                      text: '*Channel Updates:*'
-                    }
-                  },
-                  {
-                    type: 'section',
-                    text: {
-                      type: 'mrkdwn',
-                      text: results.join('\n')
-                    }
-                  },
-                  {
-                    type: 'section',
-                    text: {
-                      type: 'mrkdwn',
-                      text: '\n🎉 *Welcome to the community!* 🎉'
-                    }
-                  }
-                ]
-              });
-              
-                console.log('✅ User invited to all channels');
-              } catch (inviteErr) {
-              console.error('❌ Invite failed:', inviteErr);
               try {
                 await dm({
                   client: app.client,
                   user: userId,
-                  text: 'I could not add you automatically. A moderator will help you shortly.'
+                  text: `*Channel Updates:*\n${results.join('\n')}\n\nWelcome to the community!`,
+                  blocks: [
+                    {
+                      type: 'section',
+                      text: {
+                        type: 'mrkdwn',
+                        text: '*Channel Updates:*'
+                      }
+                    },
+                    {
+                      type: 'section',
+                      text: {
+                        type: 'mrkdwn',
+                        text: results.join('\n')
+                      }
+                    },
+                    {
+                      type: 'section',
+                      text: {
+                        type: 'mrkdwn',
+                        text: '\n🎉 *Welcome to the community!* 🎉'
+                      }
+                    }
+                  ]
                 });
-              } catch (dmErr) {
-                console.error('❌ Failed to send DM:', dmErr);
+                console.log('✅ User invited to all channels');
+              } catch (inviteErr) {
+                console.error('❌ Invite failed:', inviteErr);
+                try {
+                  await dm({
+                    client: app.client,
+                    user: userId,
+                    text: 'I could not add you automatically. A moderator will help you shortly.'
+                  });
+                } catch (dmErr) {
+                  console.error('❌ Failed to send DM:', dmErr);
+                }
+              } finally {
+                dmState.delete(userId);
               }
-            } finally {
-              dmState.delete(userId);
-            }
-            return;
+              return;
           }
           
           console.log('✅ Event processed successfully');
@@ -680,24 +689,46 @@ expressApp.get('/slack/oauth_redirect', async (req, res) => {
 // Helper function to set up event handlers
 function setupEventHandlers(app) {
   // Event: member_joined_channel in program announcement channel
+  // Handle member joined channel event
   app.event('member_joined_channel', async ({ event, client, logger }) => {
     try {
       if (!ANNOUNCE_CHANNEL_ID) return;
       if (event.channel !== ANNOUNCE_CHANNEL_ID) return;
+      
+      // Your member joined channel logic here
+      console.log(`User ${event.user} joined channel ${event.channel}`);
+      
+    } catch (error) {
+      console.error('Error in member_joined_channel:', error);
+    }
+  });
+}
+
+/**
+ * Handle graceful shutdown
+ * @param {string} signal - The signal that triggered the shutdown
+ */
+async function shutdown(signal) {
+  console.log(`\n🚨 Received ${signal}. Shutting down gracefully...`);
+  
   try {
     await app.stop();
     console.log('✅ Bolt app stopped');
     
-    server.close(() => {
-      console.log('✅ HTTP server closed');
+    if (server) {
+      server.close(() => {
+        console.log('✅ HTTP server closed');
+        process.exit(0);
+      });
+      
+      // Force close after 5 seconds
+      setTimeout(() => {
+        console.warn('⚠️ Forcing shutdown after timeout');
+        process.exit(1);
+      }, 5000);
+    } else {
       process.exit(0);
-    });
-    
-    // Force close after 5 seconds
-    setTimeout(() => {
-      console.warn('⚠️ Forcing shutdown after timeout');
-      process.exit(1);
-    }, 5000);
+    }
   } catch (error) {
     console.error('Error during shutdown:', error);
     process.exit(1);
