@@ -39,15 +39,21 @@ const {
 // Create Express app
 const expressApp = express();
 
-// Initialize app without token - we'll set it after OAuth
+// Initialize the app with minimal configuration
 let app = new App({
   signingSecret: SLACK_SIGNING_SECRET,
   processBeforeResponse: true,
-  // Disable token requirement since we'll get it from OAuth
+  // We'll set the token after OAuth flow completes
+  token: undefined,
+  // Custom authorize function that will be used after OAuth
   authorize: async () => {
+    const installation = Array.from(installations.values())[0]; // Get first installation
+    if (!installation) {
+      throw new Error('No installation found. Please complete OAuth flow first.');
+    }
     return {
-      botToken: SLACK_BOT_TOKEN,
-      botId: process.env.BOT_USER_ID
+      botToken: installation.botToken,
+      botId: installation.botUserId
     };
   }
 });
@@ -287,6 +293,8 @@ expressApp.post(
               const normalized = text.replace(/[^0-9]/g, '');
               let targetChannels = [];
               
+              try {
+              
               if (normalized === '2') {
                 // Get Batch 2 channels from environment variable
                 const batch2Channels = process.env.BATCH2_CHANNEL_IDS ? 
@@ -384,8 +392,8 @@ expressApp.post(
                 ]
               });
               
-              console.log('✅ User invited to all channels');
-            } catch (inviteErr) {
+                console.log('✅ User invited to all channels');
+              } catch (inviteErr) {
               console.error('❌ Invite failed:', inviteErr);
               try {
                 await dm({
@@ -601,12 +609,27 @@ expressApp.get('/slack/oauth_redirect', async (req, res) => {
       installedAt: new Date().toISOString()
     });
     
-    // Update the app with the new token
+    // Update the global app instance with the new token
     app = new App({
       token: result.access_token,
       signingSecret: SLACK_SIGNING_SECRET,
-      processBeforeResponse: true
+      processBeforeResponse: true,
+      authorize: async ({ teamId }) => {
+        return {
+          botToken: result.access_token,
+          botId: result.bot_user_id
+        };
+      }
     });
+    
+    // Set up event handlers
+    setupEventHandlers(app);
+    
+    // Start the app if not already started
+    if (!server) {
+      server = await app.start(process.env.PORT || 3000);
+      console.log(`⚡️ Bolt app is running on port ${process.env.PORT || 3000}`);
+    }
     
     // Send success response
     res.send(`
@@ -654,12 +677,13 @@ expressApp.get('/slack/oauth_redirect', async (req, res) => {
   }
 });
 
-// Server will be started in the main execution block below
-
-// Handle graceful shutdown
-async function shutdown(signal) {
-  console.log(`\n🚨 Received ${signal}. Shutting down gracefully...`);
-  
+// Helper function to set up event handlers
+function setupEventHandlers(app) {
+  // Event: member_joined_channel in program announcement channel
+  app.event('member_joined_channel', async ({ event, client, logger }) => {
+    try {
+      if (!ANNOUNCE_CHANNEL_ID) return;
+      if (event.channel !== ANNOUNCE_CHANNEL_ID) return;
   try {
     await app.stop();
     console.log('✅ Bolt app stopped');
