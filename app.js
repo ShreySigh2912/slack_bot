@@ -89,11 +89,28 @@ function buildBatchModal() {
         action_id: "batch",
         options: [
           { text: { type: "plain_text", text: "Batch 2" }, value: "batch2" },
-          { text: { type: "plain_text", text: "Batch 3" }, value: "batch3" }
+          { text: { type: "plain_text", text: "Batch 3" }, value: "batch3" },
+          { text: { type: "plain_text", text: "Batch 4" }, value: "batch4" }
         ]
       }
     }]
   };
+}
+
+/**
+ * Get channel IDs for a batch (supports multiple channels)
+ * @param {string} batchKey - The batch key (batch2, batch3, batch4)
+ * @returns {string[]} Array of channel IDs
+ */
+function getBatchChannels(batchKey) {
+  const channelMap = {
+    batch2: process.env.BATCH2_CHANNEL_ID ? [process.env.BATCH2_CHANNEL_ID] : [],
+    batch3: process.env.BATCH3_CHANNEL_ID ? [process.env.BATCH3_CHANNEL_ID] : [],
+    batch4: process.env.BATCH4_CHANNEL_IDS
+      ? process.env.BATCH4_CHANNEL_IDS.split(',').map(id => id.trim()).filter(Boolean)
+      : []
+  };
+  return channelMap[batchKey] || [];
 }
 
 /**
@@ -234,43 +251,86 @@ slackApp.action('menu_nothing', async ({ ack, body, client, logger }) => {
 // VIEW SUBMISSION HANDLERS
 // ============================================================================
 
-// --- 4) Batch modal submission → Invite user to selected batch channel ---
+// --- 4) Batch modal submission → Invite user to selected batch channel(s) ---
 slackApp.view('batch_form_submit', async ({ ack, body, view, client, logger }) => {
   await ack();
   try {
     const user = body.user.id;
     const selected = view.state.values.batch_block.batch.selected_option?.value;
-    const map = {
-      batch2: process.env.BATCH2_CHANNEL_ID,
-      batch3: process.env.BATCH3_CHANNEL_ID
-    };
-    const target = map[selected];
-    
-    if (!target) {
-      console.warn(`⚠️  No channel found for selection: ${selected}`);
+    const targetChannels = getBatchChannels(selected);
+
+    if (targetChannels.length === 0) {
+      console.warn(`⚠️  No channels configured for selection: ${selected}`);
+      const { channel: im } = await client.conversations.open({ users: user });
+      await client.chat.postMessage({
+        channel: im.id,
+        text: `⚠️ Sorry, no channels are configured for ${selected}. Please contact an admin.`
+      });
       return;
     }
 
-    console.log(`✅ User ${user} selected ${selected} → Inviting to channel ${target}`);
+    console.log(`✅ User ${user} selected ${selected} → Inviting to ${targetChannels.length} channel(s)`);
 
-    // Try to join the channel first (bot must be a member to invite)
-    try {
-      await client.conversations.join({ channel: target });
-    } catch (joinErr) {
-      console.log(`ℹ️  Bot already in channel ${target} or cannot join:`, joinErr.message);
+    const results = [];
+
+    // Process each target channel
+    for (const channelId of targetChannels) {
+      // Try to join the channel first (bot must be a member to invite)
+      try {
+        await client.conversations.join({ channel: channelId });
+      } catch (joinErr) {
+        console.log(`ℹ️  Bot already in channel ${channelId} or cannot join:`, joinErr.message);
+      }
+
+      // Invite user to the channel
+      try {
+        await client.conversations.invite({ channel: channelId, users: user });
+        results.push({ channelId, success: true, status: 'added' });
+        console.log(`   ✓ Added to <#${channelId}>`);
+      } catch (inviteErr) {
+        if (inviteErr.data?.error === 'already_in_channel') {
+          results.push({ channelId, success: true, status: 'already_member' });
+          console.log(`   ℹ️  Already in <#${channelId}>`);
+        } else {
+          results.push({ channelId, success: false, status: inviteErr.data?.error || 'error' });
+          console.error(`   ✗ Failed to add to ${channelId}:`, inviteErr.data?.error);
+        }
+      }
     }
 
-    // Invite user to the channel
-    await client.conversations.invite({ channel: target, users: user });
-
-    // Send confirmation DM
+    // Build confirmation message
     const { channel: im } = await client.conversations.open({ users: user });
-    await client.chat.postMessage({
-      channel: im.id,
-      text: `✅ You're in! Added to your batch channel. Welcome to <#${target}>!`
-    });
+    const successCount = results.filter(r => r.success).length;
+
+    if (successCount === targetChannels.length) {
+      const channelLinks = results.map(r => `<#${r.channelId}>`).join(', ');
+      await client.chat.postMessage({
+        channel: im.id,
+        text: `✅ You're in! Added to your batch channel(s): ${channelLinks}. Welcome!`
+      });
+    } else if (successCount > 0) {
+      const addedChannels = results.filter(r => r.success).map(r => `<#${r.channelId}>`).join(', ');
+      const failedChannels = results.filter(r => !r.success).map(r => `<#${r.channelId}>`).join(', ');
+      await client.chat.postMessage({
+        channel: im.id,
+        text: `⚠️ Partially added:\n✅ Success: ${addedChannels}\n❌ Failed: ${failedChannels}\n\nA moderator will help with the remaining channels.`
+      });
+    } else {
+      await client.chat.postMessage({
+        channel: im.id,
+        text: `❌ Could not add you to the batch channels. A moderator will help you shortly.`
+      });
+    }
   } catch (e) {
     logger.error('Error in batch_form_submit:', e);
+    // Try to notify user of error
+    try {
+      const { channel: im } = await client.conversations.open({ users: body.user.id });
+      await client.chat.postMessage({
+        channel: im.id,
+        text: `❌ Something went wrong. Please try again or contact a moderator.`
+      });
+    } catch {}
   }
 });
 
@@ -288,9 +348,14 @@ server.listen(port, () => {
   console.log('📋 Features enabled:');
   console.log('   ✓ Member join → Batch selection');
   console.log('   ✓ DM concierge → Help menu');
-  console.log('   ✓ Batch access modal');
+  console.log('   ✓ Batch access modal (Batch 2, 3, 4)');
   console.log('');
   console.log('📍 Slack Events URL: /slack/events');
   console.log('🔍 Healthcheck: GET /');
+  console.log('');
+  console.log('📦 Batch channels configured:');
+  console.log(`   Batch 2: ${process.env.BATCH2_CHANNEL_ID || '(not set)'}`);
+  console.log(`   Batch 3: ${process.env.BATCH3_CHANNEL_ID || '(not set)'}`);
+  console.log(`   Batch 4: ${process.env.BATCH4_CHANNEL_IDS || '(not set)'}`);
   console.log('');
 });
