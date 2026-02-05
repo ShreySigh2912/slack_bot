@@ -49,6 +49,12 @@ const batch2Channels = parseChannelIds(BATCH2_CHANNEL_IDS);
 const batch3Channels = parseChannelIds(BATCH3_CHANNEL_IDS);
 const batch4Channels = parseChannelIds(BATCH4_CHANNEL_IDS);
 
+// Log configured channels at startup for debugging
+console.log('Configured batch channels:');
+console.log(`  Batch 2: ${batch2Channels.length} channel(s) - [${batch2Channels.join(', ')}]`);
+console.log(`  Batch 3: ${batch3Channels.length} channel(s) - [${batch3Channels.join(', ')}]`);
+console.log(`  Batch 4: ${batch4Channels.length} channel(s) - [${batch4Channels.join(', ')}]`);
+
 // Create Express app
 const expressApp = express();
 
@@ -356,32 +362,55 @@ async function handleSlackEvent(event, requestId) {
       const results = [];
       let anySuccess = false;
 
-      for (const channelId of batchChannels) {
+      for (let i = 0; i < batchChannels.length; i++) {
+        const channelId = batchChannels[i];
+        console.log(`[${requestId}] Processing channel ${i + 1}/${batchChannels.length}: ${channelId}`);
+
         try {
           // First, ensure the bot is in the channel
           try {
             await app.client.conversations.join({ channel: channelId });
+            console.log(`[${requestId}] Bot joined channel ${channelId}`);
           } catch (joinError) {
-            console.log(`[${requestId}] Bot join attempt for ${channelId}:`, joinError.data?.error || joinError.message);
+            const joinErr = joinError.data?.error || joinError.message;
+            console.log(`[${requestId}] Bot join attempt for ${channelId}: ${joinErr}`);
+            // If it's a private channel, bot can't self-join - that's expected
+            if (joinErr === 'method_not_supported_for_channel_type' || joinErr === 'channel_not_found') {
+              console.log(`[${requestId}] Channel ${channelId} may be private - bot must be manually added`);
+            }
           }
 
           // Try to invite the user
+          console.log(`[${requestId}] Inviting user ${userId} to channel ${channelId}...`);
           await app.client.conversations.invite({
             channel: channelId,
             users: userId
           });
+          console.log(`[${requestId}] SUCCESS: User added to ${channelId}`);
           results.push({ channelId, success: true, status: 'added' });
           anySuccess = true;
         } catch (inviteErr) {
-          if (inviteErr.data?.error === 'already_in_channel') {
+          const errCode = inviteErr.data?.error || inviteErr.message;
+          console.log(`[${requestId}] Invite error for ${channelId}: ${errCode}`);
+
+          if (errCode === 'already_in_channel') {
+            console.log(`[${requestId}] User already in ${channelId} - counting as success`);
             results.push({ channelId, success: true, status: 'already_member' });
             anySuccess = true;
+          } else if (errCode === 'not_in_channel') {
+            console.error(`[${requestId}] FAILED: Bot is not a member of ${channelId} - please add the bot to this channel`);
+            results.push({ channelId, success: false, status: 'bot_not_in_channel' });
+          } else if (errCode === 'channel_not_found') {
+            console.error(`[${requestId}] FAILED: Channel ${channelId} not found - check the channel ID`);
+            results.push({ channelId, success: false, status: 'channel_not_found' });
           } else {
-            console.error(`[${requestId}] Invite to ${channelId} failed:`, inviteErr.data?.error || inviteErr.message);
-            results.push({ channelId, success: false, status: inviteErr.data?.error || 'failed' });
+            console.error(`[${requestId}] FAILED: Invite to ${channelId} failed: ${errCode}`);
+            results.push({ channelId, success: false, status: errCode || 'failed' });
           }
         }
       }
+
+      console.log(`[${requestId}] Invite results:`, JSON.stringify(results));
 
       // Build response message
       if (anySuccess) {
