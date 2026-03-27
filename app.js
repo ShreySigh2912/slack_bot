@@ -114,7 +114,6 @@ function buildBatchModal() {
           type: 'radio_buttons',
           action_id: 'batch_select',
           options: [
-            { text: { type: 'plain_text', text: 'Batch 2' }, value: 'batch2' },
             { text: { type: 'plain_text', text: 'Batch 3' }, value: 'batch3' },
             { text: { type: 'plain_text', text: 'Batch 4' }, value: 'batch4' },
             { text: { type: 'plain_text', text: 'Batch 5' }, value: 'batch5' },
