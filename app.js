@@ -104,13 +104,12 @@ function buildBatchModal() {
  * @returns {string[]} Array of channel IDs
  */
 function getBatchChannels(batchKey) {
+  const parseIds = (val) => val ? val.split(',').map(id => id.trim()).filter(Boolean) : [];
   const channelMap = {
-    batch2: process.env.BATCH2_CHANNEL_ID ? [process.env.BATCH2_CHANNEL_ID] : [],
-    batch3: process.env.BATCH3_CHANNEL_ID ? [process.env.BATCH3_CHANNEL_ID] : [],
-    batch4: process.env.BATCH4_CHANNEL_IDS
-      ? process.env.BATCH4_CHANNEL_IDS.split(',').map(id => id.trim()).filter(Boolean)
-      : [],
-    batch5: process.env.BATCH5_CHANNEL_ID ? [process.env.BATCH5_CHANNEL_ID] : []
+    batch2: parseIds(process.env.BATCH2_CHANNEL_ID),
+    batch3: parseIds(process.env.BATCH3_CHANNEL_ID),
+    batch4: parseIds(process.env.BATCH4_CHANNEL_ID),
+    batch5: parseIds(process.env.BATCH5_CHANNEL_ID)
   };
   return channelMap[batchKey] || [];
 }
@@ -358,7 +357,7 @@ server.listen(port, () => {
   console.log('📦 Batch channels configured:');
   console.log(`   Batch 2: ${process.env.BATCH2_CHANNEL_ID || '(not set)'}`);
   console.log(`   Batch 3: ${process.env.BATCH3_CHANNEL_ID || '(not set)'}`);
-  console.log(`   Batch 4: ${process.env.BATCH4_CHANNEL_IDS || '(not set)'}`);
+  console.log(`   Batch 4: ${process.env.BATCH4_CHANNEL_ID || '(not set)'}`);
   console.log(`   Batch 5: ${process.env.BATCH5_CHANNEL_ID || '(not set)'}`);
   console.log('');
 });
