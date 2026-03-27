@@ -36,20 +36,20 @@ const {
   SLACK_REDIRECT_URL,
   ANNOUNCE_CHANNEL_ID,
   LOBBY_CHANNEL_ID,
-  BATCH2_CHANNEL_IDS,
-  BATCH3_CHANNEL_IDS,
-  BATCH4_CHANNEL_IDS,
-  BATCH5_CHANNEL_IDS
+  BATCH2_CHANNEL_ID,
+  BATCH3_CHANNEL_ID,
+  BATCH4_CHANNEL_ID,
+  BATCH5_CHANNEL_ID
 } = process.env;
 
-// Parse batch channels (all support comma-separated multiple channels)
+// Parse batch channels (supports comma-separated multiple channels)
 const parseChannelIds = (envVar) =>
   envVar ? envVar.split(',').map(id => id.trim()).filter(Boolean) : [];
 
-const batch2Channels = parseChannelIds(BATCH2_CHANNEL_IDS);
-const batch3Channels = parseChannelIds(BATCH3_CHANNEL_IDS);
-const batch4Channels = parseChannelIds(BATCH4_CHANNEL_IDS);
-const batch5Channels = parseChannelIds(BATCH5_CHANNEL_IDS);
+const batch2Channels = parseChannelIds(BATCH2_CHANNEL_ID);
+const batch3Channels = parseChannelIds(BATCH3_CHANNEL_ID);
+const batch4Channels = parseChannelIds(BATCH4_CHANNEL_ID);
+const batch5Channels = parseChannelIds(BATCH5_CHANNEL_ID);
 
 // Log configured channels at startup for debugging
 console.log('Configured batch channels:');
