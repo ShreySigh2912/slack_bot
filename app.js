@@ -49,24 +49,33 @@ server.get('/health', (_req, res) => res.status(200).send('OK'));
 // Intercept /slack/events before it reaches Bolt
 server.post(
   '/slack/events',
-  express.raw({ type: 'application/json' }),
+  express.raw({ type: '*/*' }),
   (req, res, next) => {
     const raw = req.body?.toString('utf8') || '';
-    let body = {};
-    try { body = JSON.parse(raw); } catch { /* ignore */ }
+    const contentType = req.headers['content-type'] || '';
 
-    // URL verification — Slack just wants the challenge echoed back.
-    // No signature check needed here.
-    if (body?.type === 'url_verification') {
-      console.log('[bot] URL verification challenge — responding');
-      return res.status(200).json({ challenge: body.challenge });
+    // Always set rawBody so Bolt's signature verification can read it.
+    req.rawBody = raw;
+
+    if (contentType.includes('application/json')) {
+      let body = {};
+      try { body = JSON.parse(raw); } catch { /* ignore */ }
+
+      // URL verification — echo challenge immediately, no signature check needed.
+      if (body?.type === 'url_verification') {
+        console.log('[bot] URL verification challenge — responding');
+        return res.status(200).json({ challenge: body.challenge });
+      }
+
+      req.body = body;
+    } else if (contentType.includes('application/x-www-form-urlencoded')) {
+      // Button clicks and modal submissions arrive as form-urlencoded
+      // with the JSON payload in a 'payload' field.
+      const params = new URLSearchParams(raw);
+      const payload = params.get('payload');
+      try { req.body = payload ? JSON.parse(payload) : {}; } catch { req.body = {}; }
     }
 
-    // For every other request: set req.rawBody so Bolt's signature
-    // verification middleware can read it (it looks for req.rawBody),
-    // and set req.body to the parsed object so Bolt can process the event.
-    req.rawBody = raw;
-    req.body = body;
     next();
   }
 );
