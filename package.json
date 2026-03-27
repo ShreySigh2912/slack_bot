@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Slack bot to collect name and batch, then invite to batch channels.",
   "type": "module",
-  "main": "index.js",
+  "main": "app.js",
   "scripts": {
     "start": "node app.js",
     "build": "echo 'No build step required'",

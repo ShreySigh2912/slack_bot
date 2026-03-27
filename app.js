@@ -1,22 +1,26 @@
-/*
- * SLACK BOT - ADMISSION & DM CONCIERGE
- * 
- * Required Bot Token Scopes (OAuth & Permissions):
- *   - chat:write
- *   - im:write
- *   - im:history
- *   - users:read
- *   - channels:read
- *   - groups:read
- *   - channels:manage
- *   - groups:write
- * 
- * Required Event Subscriptions (Event Subscriptions → bot events):
- *   - member_joined_channel
- *   - message.im
- * 
- * ⚠️  IMPORTANT: After adding new scopes or events, you MUST reinstall the app
- *    to your workspace (OAuth & Permissions → Reinstall App)
+/**
+ * SLACK ADMISSION BOT
+ *
+ * Required Bot Token Scopes (api.slack.com → OAuth & Permissions):
+ *   chat:write, im:write, im:history, users:read,
+ *   channels:read, groups:read, channels:manage, groups:write
+ *
+ * Required Event Subscriptions (Event Subscriptions → Bot Events):
+ *   member_joined_channel, message.im
+ *
+ * Required Interactivity:
+ *   Interactivity & Shortcuts → ON
+ *   Request URL: https://<your-render-url>/slack/events
+ *
+ * Environment Variables (set in Render dashboard):
+ *   SLACK_BOT_TOKEN      - Bot User OAuth Token (xoxb-...)
+ *   SLACK_SIGNING_SECRET - App Signing Secret
+ *   LOBBY_CHANNEL_ID     - Channel ID where new members arrive
+ *   BATCH2_CHANNEL_ID    - Channel ID(s) for Batch 2 (comma-separated if multiple)
+ *   BATCH3_CHANNEL_ID    - Channel ID(s) for Batch 3
+ *   BATCH4_CHANNEL_ID    - Channel ID(s) for Batch 4
+ *   BATCH5_CHANNEL_ID    - Channel ID(s) for Batch 5
+ *   PORT                 - Set automatically by Render (do not set manually)
  */
 
 import 'dotenv/config';
@@ -25,339 +29,337 @@ import bolt from '@slack/bolt';
 
 const { App } = bolt;
 
-// --- Bolt App (HTTP mode) ---
-const slackApp = new App({
+// ─── Slack Bolt (no built-in receiver — we route manually via Express) ────────
+const slack = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
 });
 
-// --- Express server wrapper ---
+// ─── Express server ───────────────────────────────────────────────────────────
 const server = express();
 
-// Health endpoints
+// Healthcheck endpoints (Render pings these to verify the service is up)
 server.get('/', (_req, res) => res.status(200).send('OK'));
 server.get('/health', (_req, res) => res.status(200).send('OK'));
 
-// Slack Events endpoint
+// All Slack events, actions, and view submissions come through this endpoint.
+// IMPORTANT: express.raw() must be used here — Slack signature verification
+// requires the raw request body, not a parsed JSON object.
 server.post(
   '/slack/events',
-  // IMPORTANT: raw body so Slack signature verification works
   express.raw({ type: 'application/json' }),
   async (req, res) => {
     try {
       const raw = req.body?.toString('utf8') || '';
       let body = {};
-      try { body = JSON.parse(raw || '{}'); } catch {}
+      try { body = JSON.parse(raw); } catch { /* ignore parse errors */ }
 
-      // 1) URL verification: echo the challenge
-      if (body?.type === 'url_verification' && body?.challenge) {
-        console.log('Responding to Slack challenge:', body.challenge);
-        return res.status(200).send(body.challenge);
+      // Slack sends a one-time challenge when you first configure the Events URL.
+      if (body?.type === 'url_verification') {
+        console.log('[slack] URL verification challenge received');
+        return res.status(200).json({ challenge: body.challenge });
       }
 
-      // 2) Forward other events to Bolt. Attach raw body for signature check.
+      // Forward everything else to Bolt for processing.
       req.body = raw;
-      await slackApp.processEvent(req, res);
+      await slack.processEvent(req, res);
     } catch (err) {
-      console.error('Slack /slack/events error:', err);
-      if (!res.headersSent) res.status(200).end(); // prevent Slack retries loop
+      console.error('[slack] /slack/events error:', err);
+      // Always return 200 to Slack to prevent retry storms.
+      if (!res.headersSent) res.status(200).end();
     }
   }
 );
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Builds the batch selection modal (reusable)
- * @returns {object} Slack modal view object
+ * Parse comma-separated channel IDs from an env var value.
+ * e.g. "C123,C456" → ["C123", "C456"]
+ */
+function getChannels(envValue) {
+  if (!envValue) return [];
+  return envValue.split(',').map(id => id.trim()).filter(Boolean);
+}
+
+/**
+ * Return the list of channel IDs configured for a given batch key.
+ */
+function getBatchChannels(batchKey) {
+  const map = {
+    batch2: getChannels(process.env.BATCH2_CHANNEL_ID),
+    batch3: getChannels(process.env.BATCH3_CHANNEL_ID),
+    batch4: getChannels(process.env.BATCH4_CHANNEL_ID),
+    batch5: getChannels(process.env.BATCH5_CHANNEL_ID),
+  };
+  return map[batchKey] ?? [];
+}
+
+/**
+ * Build the batch-selection modal view.
  */
 function buildBatchModal() {
   return {
-    type: "modal",
-    callback_id: "batch_form_submit",
-    title: { type: "plain_text", text: "Choose Your Batch" },
-    submit: { type: "plain_text", text: "Confirm" },
-    close: { type: "plain_text", text: "Cancel" },
-    blocks: [{
-      type: "input",
-      block_id: "batch_block",
-      label: { type: "plain_text", text: "Which batch are you part of?" },
-      element: {
-        type: "radio_buttons",
-        action_id: "batch",
-        options: [
-          { text: { type: "plain_text", text: "Batch 2" }, value: "batch2" },
-          { text: { type: "plain_text", text: "Batch 3" }, value: "batch3" },
-          { text: { type: "plain_text", text: "Batch 4" }, value: "batch4" },
-          { text: { type: "plain_text", text: "Batch 5" }, value: "batch5" }
-        ]
-      }
-    }]
-  };
-}
-
-/**
- * Get channel IDs for a batch (supports multiple channels)
- * @param {string} batchKey - The batch key (batch2, batch3, batch4)
- * @returns {string[]} Array of channel IDs
- */
-function getBatchChannels(batchKey) {
-  const parseIds = (val) => val ? val.split(',').map(id => id.trim()).filter(Boolean) : [];
-  const channelMap = {
-    batch2: parseIds(process.env.BATCH2_CHANNEL_ID),
-    batch3: parseIds(process.env.BATCH3_CHANNEL_ID),
-    batch4: parseIds(process.env.BATCH4_CHANNEL_ID),
-    batch5: parseIds(process.env.BATCH5_CHANNEL_ID)
-  };
-  return channelMap[batchKey] || [];
-}
-
-/**
- * Sends the DM concierge help menu with action buttons
- * @param {object} client - Slack Web API client
- * @param {string} channel - Channel ID (DM channel)
- */
-async function sendHelpMenu(client, channel) {
-  await client.chat.postMessage({
-    channel,
-    text: "How can I help you?",
+    type: 'modal',
+    callback_id: 'batch_form_submit',
+    title: { type: 'plain_text', text: 'Choose Your Batch' },
+    submit: { type: 'plain_text', text: 'Confirm' },
+    close: { type: 'plain_text', text: 'Cancel' },
     blocks: [
       {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: "👋 *How can I help you?*\n\nChoose an option below:"
-        }
+        type: 'input',
+        block_id: 'batch_block',
+        label: { type: 'plain_text', text: 'Which batch are you part of?' },
+        element: {
+          type: 'radio_buttons',
+          action_id: 'batch_select',
+          options: [
+            { text: { type: 'plain_text', text: 'Batch 2' }, value: 'batch2' },
+            { text: { type: 'plain_text', text: 'Batch 3' }, value: 'batch3' },
+            { text: { type: 'plain_text', text: 'Batch 4' }, value: 'batch4' },
+            { text: { type: 'plain_text', text: 'Batch 5' }, value: 'batch5' },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+/**
+ * Post the help menu to a DM channel.
+ */
+async function sendHelpMenu(client, channelId) {
+  await client.chat.postMessage({
+    channel: channelId,
+    text: 'How can I help you?',
+    blocks: [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: '*How can I help you?*\n\nChoose an option below:' },
       },
       {
-        type: "actions",
+        type: 'actions',
         elements: [
           {
-            type: "button",
-            text: { type: "plain_text", text: "🎓 Batch Access", emoji: true },
-            action_id: "menu_batch_access",
-            style: "primary"
+            type: 'button',
+            text: { type: 'plain_text', text: 'Batch Access' },
+            action_id: 'menu_batch_access',
+            style: 'primary',
           },
           {
-            type: "button",
-            text: { type: "plain_text", text: "Nothing", emoji: true },
-            action_id: "menu_nothing"
-          }
-        ]
-      }
-    ]
+            type: 'button',
+            text: { type: 'plain_text', text: 'Nothing, thanks' },
+            action_id: 'menu_nothing',
+          },
+        ],
+      },
+    ],
   });
 }
 
-// ============================================================================
-// EVENT LISTENERS
-// ============================================================================
-
-// --- 1) Member joins lobby channel → Send welcome with batch button ---
-slackApp.event('member_joined_channel', async ({ event, client, logger }) => {
+/**
+ * Invite a user to a channel, joining the channel as the bot first if needed.
+ * Returns { success: boolean, status: string }
+ */
+async function inviteUserToChannel(client, channelId, userId) {
+  // Bot must be in the channel before it can invite others.
   try {
+    await client.conversations.join({ channel: channelId });
+  } catch {
+    // Already a member or private channel — ignore.
+  }
+
+  try {
+    await client.conversations.invite({ channel: channelId, users: userId });
+    return { success: true, status: 'added' };
+  } catch (err) {
+    if (err.data?.error === 'already_in_channel') {
+      return { success: true, status: 'already_member' };
+    }
+    console.error(`[slack] Failed to invite ${userId} to ${channelId}:`, err.data?.error);
+    return { success: false, status: err.data?.error || 'unknown_error' };
+  }
+}
+
+// ─── Event: member joins the lobby channel ────────────────────────────────────
+slack.event('member_joined_channel', async ({ event, client, logger }) => {
+  try {
+    // Only act on joins to the designated lobby channel.
     if (event.channel !== process.env.LOBBY_CHANNEL_ID) return;
-    const user = event.user;
-    const { user: info } = await client.users.info({ user });
+
+    // Skip bots.
+    const { user: info } = await client.users.info({ user: event.user });
     if (info?.is_bot) return;
 
-    const { channel: im } = await client.conversations.open({ users: user });
+    console.log(`[slack] New member in lobby: ${event.user}`);
+
+    // Open a DM and send a welcome message with the batch selection button.
+    const { channel: dm } = await client.conversations.open({ users: event.user });
     await client.chat.postMessage({
-      channel: im.id,
-      text: "Welcome! Please pick your batch.",
+      channel: dm.id,
+      text: 'Welcome! Please select your batch to get access.',
       blocks: [
-        { type: "section", text: { type: "mrkdwn", text: "👋 *Welcome!* Select your batch to get access." } },
-        { type: "actions", elements: [
-          { type: "button", text: { type: "plain_text", text: "Select Batch" }, action_id: "open_batch_form" }
-        ]}
-      ]
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: '*Welcome!* Select your batch below to get added to your group channels.' },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Select My Batch' },
+              action_id: 'open_batch_form',
+              style: 'primary',
+            },
+          ],
+        },
+      ],
     });
-  } catch (e) { logger.error(e); }
-});
-
-// --- 2) Direct Message (DM) → Show help menu ---
-slackApp.event('message', async ({ event, client, logger }) => {
-  try {
-    // Only handle direct messages (IMs) from humans
-    if (event.channel_type !== 'im') return; // Not a DM
-    if (event.subtype) return; // Ignore bot messages, edits, etc.
-    if (event.bot_id) return; // Ignore bot messages
-
-    const text = (event.text || '').toLowerCase().trim();
-    const GREETING = /\b(hi|hello|hey|help|namaste|hola|start|menu)\b/;
-
-    // Show menu for greetings OR any message (set to true for always-on concierge)
-    if (GREETING.test(text) || true) {
-      console.log(`📨 DM received from user ${event.user}: "${event.text}" → Showing help menu`);
-      await sendHelpMenu(client, event.channel);
-    }
-  } catch (e) {
-    logger.error('Error in message.im handler:', e);
+  } catch (err) {
+    logger.error('[slack] member_joined_channel error:', err);
   }
 });
 
-// ============================================================================
-// ACTION HANDLERS
-// ============================================================================
-
-// --- 3a) "Select Batch" button from welcome message → Open modal ---
-slackApp.action('open_batch_form', async ({ ack, body, client, logger }) => {
-  await ack();
+// ─── Event: DM message received ───────────────────────────────────────────────
+slack.event('message', async ({ event, client, logger }) => {
   try {
-    console.log(`🎯 Action: open_batch_form from user ${body.user.id}`);
-    await client.views.open({
-      trigger_id: body.trigger_id,
-      view: buildBatchModal() // Reuse modal builder
-    });
-  } catch (e) {
-    logger.error('Error in open_batch_form:', e);
+    // Only handle DMs from real users.
+    if (event.channel_type !== 'im') return;
+    if (event.subtype) return;   // skip edits, deletions, bot messages
+    if (event.bot_id) return;
+
+    console.log(`[slack] DM from ${event.user}: "${event.text}"`);
+    await sendHelpMenu(client, event.channel);
+  } catch (err) {
+    logger.error('[slack] message event error:', err);
   }
 });
 
-// --- 3b) "Batch Access" button from DM menu → Open modal ---
-slackApp.action('menu_batch_access', async ({ ack, body, client, logger }) => {
+// ─── Action: "Select My Batch" button (from welcome DM) ──────────────────────
+slack.action('open_batch_form', async ({ ack, body, client, logger }) => {
   await ack();
   try {
-    console.log(`🎯 Action: menu_batch_access from user ${body.user.id}`);
-    await client.views.open({
-      trigger_id: body.trigger_id,
-      view: buildBatchModal() // Reuse modal builder
-    });
-  } catch (e) {
-    logger.error('Error in menu_batch_access:', e);
+    console.log(`[slack] open_batch_form triggered by ${body.user.id}`);
+    await client.views.open({ trigger_id: body.trigger_id, view: buildBatchModal() });
+  } catch (err) {
+    logger.error('[slack] open_batch_form error:', err);
   }
 });
 
-// --- 3c) "Nothing" button from DM menu → Polite closing ---
-slackApp.action('menu_nothing', async ({ ack, body, client, logger }) => {
+// ─── Action: "Batch Access" button (from DM help menu) ───────────────────────
+slack.action('menu_batch_access', async ({ ack, body, client, logger }) => {
   await ack();
   try {
-    console.log(`🎯 Action: menu_nothing from user ${body.user.id}`);
-    // Get the channel (DM) from the action
-    const channel = body.channel?.id;
-    if (channel) {
+    console.log(`[slack] menu_batch_access triggered by ${body.user.id}`);
+    await client.views.open({ trigger_id: body.trigger_id, view: buildBatchModal() });
+  } catch (err) {
+    logger.error('[slack] menu_batch_access error:', err);
+  }
+});
+
+// ─── Action: "Nothing, thanks" button ────────────────────────────────────────
+slack.action('menu_nothing', async ({ ack, body, client, logger }) => {
+  await ack();
+  try {
+    const channelId = body.channel?.id;
+    if (channelId) {
       await client.chat.postMessage({
-        channel,
-        text: "No problem! If you need anything later, just say hi. 👋"
+        channel: channelId,
+        text: 'No problem! If you ever need help, just send me a message.',
       });
     }
-  } catch (e) {
-    logger.error('Error in menu_nothing:', e);
+  } catch (err) {
+    logger.error('[slack] menu_nothing error:', err);
   }
 });
 
-// ============================================================================
-// VIEW SUBMISSION HANDLERS
-// ============================================================================
-
-// --- 4) Batch modal submission → Invite user to selected batch channel(s) ---
-slackApp.view('batch_form_submit', async ({ ack, body, view, client, logger }) => {
+// ─── View submission: batch modal confirmed ───────────────────────────────────
+slack.view('batch_form_submit', async ({ ack, body, view, client, logger }) => {
   await ack();
+
+  const userId = body.user.id;
+  const selected = view.state.values.batch_block.batch_select.selected_option?.value;
+
+  console.log(`[slack] batch_form_submit: user=${userId} batch=${selected}`);
+
   try {
-    const user = body.user.id;
-    const selected = view.state.values.batch_block.batch.selected_option?.value;
+    const { channel: dm } = await client.conversations.open({ users: userId });
     const targetChannels = getBatchChannels(selected);
 
     if (targetChannels.length === 0) {
-      console.warn(`⚠️  No channels configured for selection: ${selected}`);
-      const { channel: im } = await client.conversations.open({ users: user });
+      console.warn(`[slack] No channels configured for ${selected}`);
       await client.chat.postMessage({
-        channel: im.id,
-        text: `⚠️ Sorry, no channels are configured for ${selected}. Please contact an admin.`
+        channel: dm.id,
+        text: `No channels are configured for ${selected} yet. Please contact an admin.`,
       });
       return;
     }
 
-    console.log(`✅ User ${user} selected ${selected} → Inviting to ${targetChannels.length} channel(s)`);
+    // Invite user to every channel configured for this batch.
+    const results = await Promise.all(
+      targetChannels.map(channelId => inviteUserToChannel(client, channelId, userId))
+    );
 
-    const results = [];
+    const succeeded = results.filter(r => r.success);
+    const failed = results.filter(r => !r.success);
 
-    // Process each target channel
-    for (const channelId of targetChannels) {
-      // Try to join the channel first (bot must be a member to invite)
-      try {
-        await client.conversations.join({ channel: channelId });
-      } catch (joinErr) {
-        console.log(`ℹ️  Bot already in channel ${channelId} or cannot join:`, joinErr.message);
-      }
-
-      // Invite user to the channel
-      try {
-        await client.conversations.invite({ channel: channelId, users: user });
-        results.push({ channelId, success: true, status: 'added' });
-        console.log(`   ✓ Added to <#${channelId}>`);
-      } catch (inviteErr) {
-        if (inviteErr.data?.error === 'already_in_channel') {
-          results.push({ channelId, success: true, status: 'already_member' });
-          console.log(`   ℹ️  Already in <#${channelId}>`);
-        } else {
-          results.push({ channelId, success: false, status: inviteErr.data?.error || 'error' });
-          console.error(`   ✗ Failed to add to ${channelId}:`, inviteErr.data?.error);
-        }
-      }
-    }
-
-    // Build confirmation message
-    const { channel: im } = await client.conversations.open({ users: user });
-    const successCount = results.filter(r => r.success).length;
-
-    if (successCount === targetChannels.length) {
-      const channelLinks = results.map(r => `<#${r.channelId}>`).join(', ');
+    if (failed.length === 0) {
+      // All good
+      const links = targetChannels.map(id => `<#${id}>`).join(', ');
       await client.chat.postMessage({
-        channel: im.id,
-        text: `✅ You're in! Added to your batch channel(s): ${channelLinks}. Welcome!`
+        channel: dm.id,
+        text: `You have been added to your batch channel(s): ${links}. Welcome!`,
       });
-    } else if (successCount > 0) {
-      const addedChannels = results.filter(r => r.success).map(r => `<#${r.channelId}>`).join(', ');
-      const failedChannels = results.filter(r => !r.success).map(r => `<#${r.channelId}>`).join(', ');
+    } else if (succeeded.length > 0) {
+      // Partial success
+      const okLinks = targetChannels
+        .filter((_, i) => results[i].success)
+        .map(id => `<#${id}>`)
+        .join(', ');
+      const failLinks = targetChannels
+        .filter((_, i) => !results[i].success)
+        .map(id => `<#${id}>`)
+        .join(', ');
       await client.chat.postMessage({
-        channel: im.id,
-        text: `⚠️ Partially added:\n✅ Success: ${addedChannels}\n❌ Failed: ${failedChannels}\n\nA moderator will help with the remaining channels.`
+        channel: dm.id,
+        text: `Added to: ${okLinks}\nCould not add to: ${failLinks}\n\nPlease contact an admin for the remaining channel(s).`,
       });
     } else {
+      // Total failure
       await client.chat.postMessage({
-        channel: im.id,
-        text: `❌ Could not add you to the batch channels. A moderator will help you shortly.`
+        channel: dm.id,
+        text: `Could not add you to the batch channels. Please contact an admin.`,
       });
     }
-  } catch (e) {
-    logger.error('Error in batch_form_submit:', e);
-    // Try to notify user of error
+  } catch (err) {
+    logger.error('[slack] batch_form_submit error:', err);
     try {
-      const { channel: im } = await client.conversations.open({ users: body.user.id });
+      const { channel: dm } = await client.conversations.open({ users: userId });
       await client.chat.postMessage({
-        channel: im.id,
-        text: `❌ Something went wrong. Please try again or contact a moderator.`
+        channel: dm.id,
+        text: 'Something went wrong. Please try again or contact an admin.',
       });
-    } catch {}
+    } catch { /* best-effort */ }
   }
 });
 
-// ============================================================================
-// START SERVER
-// ============================================================================
+// ─── Start ────────────────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 3000;
 
-const port = process.env.PORT || 3000;
-server.listen(port, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log('');
-  console.log('🚀 ========================================');
-  console.log(`✅  Slack Bot is RUNNING on port ${port}`);
-  console.log('🚀 ========================================');
+  console.log('=========================================');
+  console.log(`  Slack Admission Bot — port ${PORT}`);
+  console.log('=========================================');
   console.log('');
-  console.log('📋 Features enabled:');
-  console.log('   ✓ Member join → Batch selection');
-  console.log('   ✓ DM concierge → Help menu');
-  console.log('   ✓ Batch access modal (Batch 2, 3, 4, 5)');
+  console.log('  Slack Events URL : POST /slack/events');
+  console.log('  Healthcheck      : GET  /health');
   console.log('');
-  console.log('📍 Slack Events URL: /slack/events');
-  console.log('🔍 Healthcheck: GET /');
-  console.log('');
-  console.log('📦 Batch channels configured:');
-  console.log(`   Batch 2: ${process.env.BATCH2_CHANNEL_ID || '(not set)'}`);
-  console.log(`   Batch 3: ${process.env.BATCH3_CHANNEL_ID || '(not set)'}`);
-  console.log(`   Batch 4: ${process.env.BATCH4_CHANNEL_ID || '(not set)'}`);
-  console.log(`   Batch 5: ${process.env.BATCH5_CHANNEL_ID || '(not set)'}`);
+  console.log('  Batch channels configured:');
+  console.log(`    Batch 2 : ${process.env.BATCH2_CHANNEL_ID || '(not set)'}`);
+  console.log(`    Batch 3 : ${process.env.BATCH3_CHANNEL_ID || '(not set)'}`);
+  console.log(`    Batch 4 : ${process.env.BATCH4_CHANNEL_ID || '(not set)'}`);
+  console.log(`    Batch 5 : ${process.env.BATCH5_CHANNEL_ID || '(not set)'}`);
   console.log('');
 });
