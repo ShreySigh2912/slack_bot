@@ -8,37 +8,73 @@
  * Required Event Subscriptions (Event Subscriptions → Bot Events):
  *   member_joined_channel, message.im
  *
- * Required Interactivity:
- *   Interactivity & Shortcuts → ON
- *   Request URL: https://<your-render-url>/slack/events
+ * Interactivity & Shortcuts → Request URL:
+ *   https://<your-render-url>/slack/events
  *
- * Environment Variables (set in Render dashboard):
- *   SLACK_BOT_TOKEN      - Bot User OAuth Token (xoxb-...)
- *   SLACK_SIGNING_SECRET - App Signing Secret
- *   LOBBY_CHANNEL_ID     - Channel where new members arrive
- *   BATCH3_CHANNEL_ID    - Channel ID(s) for Batch 3 (comma-separated if multiple)
- *   BATCH4_CHANNEL_ID    - Channel ID(s) for Batch 4
- *   BATCH5_CHANNEL_ID    - Channel ID(s) for Batch 5
- *   PORT                 - Set automatically by Render (do not set manually)
+ * Environment Variables (Render dashboard):
+ *   SLACK_BOT_TOKEN      xoxb-...
+ *   SLACK_SIGNING_SECRET from App Credentials → Signing Secret
+ *   LOBBY_CHANNEL_ID     channel where new members arrive
+ *   BATCH3_CHANNEL_ID    comma-separated channel IDs for Batch 3
+ *   BATCH4_CHANNEL_ID    comma-separated channel IDs for Batch 4
+ *   BATCH5_CHANNEL_ID    comma-separated channel IDs for Batch 5
  */
 
 import 'dotenv/config';
+import express from 'express';
 import { App, ExpressReceiver } from '@slack/bolt';
 
-// ExpressReceiver handles signature verification, URL verification, and HTTP routing.
+// ─── Bolt receiver (handles signature verification + event dispatch) ──────────
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
+  processBeforeResponse: true,
   endpoints: '/slack/events',
 });
-
-// Health endpoints — add to the receiver's underlying Express router.
-receiver.router.get('/', (_req, res) => res.status(200).send('OK'));
-receiver.router.get('/health', (_req, res) => res.status(200).send('OK'));
 
 const slack = new App({
   token: process.env.SLACK_BOT_TOKEN,
   receiver,
+  processBeforeResponse: true,
 });
+
+// ─── Main Express server ──────────────────────────────────────────────────────
+// We sit in front of receiver.app so we can handle the URL verification
+// challenge BEFORE Bolt's signature check runs. All other requests are
+// forwarded to receiver.app unchanged.
+const server = express();
+
+server.get('/', (_req, res) => res.status(200).send('OK'));
+server.get('/health', (_req, res) => res.status(200).send('OK'));
+
+// Intercept /slack/events before it reaches Bolt
+server.post(
+  '/slack/events',
+  express.raw({ type: 'application/json' }),
+  (req, res, next) => {
+    const raw = req.body?.toString('utf8') || '';
+    let body = {};
+    try { body = JSON.parse(raw); } catch { /* ignore */ }
+
+    // URL verification — Slack just wants the challenge echoed back.
+    // No signature check needed here.
+    if (body?.type === 'url_verification') {
+      console.log('[bot] URL verification challenge — responding');
+      return res.status(200).json({ challenge: body.challenge });
+    }
+
+    // For every other request: set req.rawBody so Bolt's signature
+    // verification middleware can read it (it looks for req.rawBody),
+    // and set req.body to the parsed object so Bolt can process the event.
+    req.rawBody = raw;
+    req.body = body;
+    next();
+  }
+);
+
+// Hand everything else off to Bolt's Express app.
+// req.rawBody + req.body are already set above so body-parser is skipped
+// and signature verification reads req.rawBody directly.
+server.use(receiver.app);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -112,14 +148,14 @@ async function sendHelpMenu(client, channelId) {
 }
 
 async function inviteUserToChannel(client, channelId, userId) {
-  try { await client.conversations.join({ channel: channelId }); } catch { /* already member */ }
+  try { await client.conversations.join({ channel: channelId }); } catch { /* already a member */ }
   try {
     await client.conversations.invite({ channel: channelId, users: userId });
-    return { success: true, status: 'added' };
+    return { success: true };
   } catch (err) {
-    if (err.data?.error === 'already_in_channel') return { success: true, status: 'already_member' };
-    console.error(`[bot] Failed to invite ${userId} to ${channelId}:`, err.data?.error);
-    return { success: false, status: err.data?.error || 'unknown_error' };
+    if (err.data?.error === 'already_in_channel') return { success: true };
+    console.error(`[bot] invite ${userId} → ${channelId} failed:`, err.data?.error);
+    return { success: false, channelId };
   }
 }
 
@@ -164,7 +200,6 @@ slack.event('message', async ({ event, client, logger }) => {
     if (event.channel_type !== 'im') return;
     if (event.subtype) return;
     if (event.bot_id) return;
-
     console.log(`[bot] DM from ${event.user}: "${event.text}"`);
     await sendHelpMenu(client, event.channel);
   } catch (err) {
@@ -178,18 +213,14 @@ slack.action('open_batch_form', async ({ ack, body, client, logger }) => {
   await ack();
   try {
     await client.views.open({ trigger_id: body.trigger_id, view: buildBatchModal() });
-  } catch (err) {
-    logger.error('[bot] open_batch_form error:', err);
-  }
+  } catch (err) { logger.error('[bot] open_batch_form:', err); }
 });
 
 slack.action('menu_batch_access', async ({ ack, body, client, logger }) => {
   await ack();
   try {
     await client.views.open({ trigger_id: body.trigger_id, view: buildBatchModal() });
-  } catch (err) {
-    logger.error('[bot] menu_batch_access error:', err);
-  }
+  } catch (err) { logger.error('[bot] menu_batch_access:', err); }
 });
 
 slack.action('menu_nothing', async ({ ack, body, client, logger }) => {
@@ -202,12 +233,10 @@ slack.action('menu_nothing', async ({ ack, body, client, logger }) => {
         text: 'No problem! If you ever need help, just send me a message.',
       });
     }
-  } catch (err) {
-    logger.error('[bot] menu_nothing error:', err);
-  }
+  } catch (err) { logger.error('[bot] menu_nothing:', err); }
 });
 
-// ─── View Submissions ─────────────────────────────────────────────────────────
+// ─── View submissions ─────────────────────────────────────────────────────────
 
 slack.view('batch_form_submit', async ({ ack, body, view, client, logger }) => {
   await ack();
@@ -230,57 +259,54 @@ slack.view('batch_form_submit', async ({ ack, body, view, client, logger }) => {
     }
 
     const results = await Promise.all(
-      targetChannels.map(channelId => inviteUserToChannel(client, channelId, userId))
+      targetChannels.map(id => inviteUserToChannel(client, id, userId))
     );
 
-    const succeeded = results.filter(r => r.success);
     const failed = results.filter(r => !r.success);
 
     if (failed.length === 0) {
       const links = targetChannels.map(id => `<#${id}>`).join(', ');
       await client.chat.postMessage({
         channel: dm.id,
-        text: `You have been added to your batch channel(s): ${links}. Welcome!`,
+        text: `You have been added to: ${links}. Welcome!`,
       });
-    } else if (succeeded.length > 0) {
+    } else if (failed.length < results.length) {
       const okLinks = targetChannels.filter((_, i) => results[i].success).map(id => `<#${id}>`).join(', ');
-      const failLinks = targetChannels.filter((_, i) => !results[i].success).map(id => `<#${id}>`).join(', ');
+      const failLinks = failed.map(r => `<#${r.channelId}>`).join(', ');
       await client.chat.postMessage({
         channel: dm.id,
-        text: `Added to: ${okLinks}\nCould not add to: ${failLinks}\n\nPlease contact an admin for the remaining channel(s).`,
+        text: `Added to: ${okLinks}\nCould not add to: ${failLinks} — please contact an admin.`,
       });
     } else {
       await client.chat.postMessage({
         channel: dm.id,
-        text: 'Could not add you to the batch channels. Please contact an admin.',
+        text: 'Could not add you to the channels. Please contact an admin.',
       });
     }
   } catch (err) {
     logger.error('[bot] batch_form_submit error:', err);
     try {
       const { channel: dm } = await client.conversations.open({ users: userId });
-      await client.chat.postMessage({ channel: dm.id, text: 'Something went wrong. Please try again or contact an admin.' });
+      await client.chat.postMessage({ channel: dm.id, text: 'Something went wrong. Please contact an admin.' });
     } catch { /* best-effort */ }
   }
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-(async () => {
-  const PORT = process.env.PORT || 3000;
-  await slack.start(PORT);
-
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('=========================================');
   console.log(`  Slack Admission Bot — port ${PORT}`);
   console.log('=========================================');
   console.log('');
-  console.log('  Slack Events URL : POST /slack/events');
-  console.log('  Healthcheck      : GET  /health');
+  console.log('  POST /slack/events  — Slack events');
+  console.log('  GET  /health        — Healthcheck');
   console.log('');
-  console.log('  Batch channels configured:');
+  console.log('  Batch channels:');
   console.log(`    Batch 3 : ${process.env.BATCH3_CHANNEL_ID || '(not set)'}`);
   console.log(`    Batch 4 : ${process.env.BATCH4_CHANNEL_ID || '(not set)'}`);
   console.log(`    Batch 5 : ${process.env.BATCH5_CHANNEL_ID || '(not set)'}`);
   console.log('');
-})();
+});
