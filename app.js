@@ -90,7 +90,8 @@ function buildBatchModal() {
         options: [
           { text: { type: "plain_text", text: "Batch 2" }, value: "batch2" },
           { text: { type: "plain_text", text: "Batch 3" }, value: "batch3" },
-          { text: { type: "plain_text", text: "Batch 4" }, value: "batch4" }
+          { text: { type: "plain_text", text: "Batch 4" }, value: "batch4" },
+          { text: { type: "plain_text", text: "Batch 5" }, value: "batch5" }
         ]
       }
     }]
@@ -108,7 +109,8 @@ function getBatchChannels(batchKey) {
     batch3: process.env.BATCH3_CHANNEL_ID ? [process.env.BATCH3_CHANNEL_ID] : [],
     batch4: process.env.BATCH4_CHANNEL_IDS
       ? process.env.BATCH4_CHANNEL_IDS.split(',').map(id => id.trim()).filter(Boolean)
-      : []
+      : [],
+    batch5: process.env.BATCH5_CHANNEL_ID ? [process.env.BATCH5_CHANNEL_ID] : []
   };
   return channelMap[batchKey] || [];
 }
@@ -348,7 +350,7 @@ server.listen(port, () => {
   console.log('📋 Features enabled:');
   console.log('   ✓ Member join → Batch selection');
   console.log('   ✓ DM concierge → Help menu');
-  console.log('   ✓ Batch access modal (Batch 2, 3, 4)');
+  console.log('   ✓ Batch access modal (Batch 2, 3, 4, 5)');
   console.log('');
   console.log('📍 Slack Events URL: /slack/events');
   console.log('🔍 Healthcheck: GET /');
@@ -357,5 +359,6 @@ server.listen(port, () => {
   console.log(`   Batch 2: ${process.env.BATCH2_CHANNEL_ID || '(not set)'}`);
   console.log(`   Batch 3: ${process.env.BATCH3_CHANNEL_ID || '(not set)'}`);
   console.log(`   Batch 4: ${process.env.BATCH4_CHANNEL_IDS || '(not set)'}`);
+  console.log(`   Batch 5: ${process.env.BATCH5_CHANNEL_ID || '(not set)'}`);
   console.log('');
 });
