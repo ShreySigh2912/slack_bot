@@ -38,7 +38,8 @@ const {
   LOBBY_CHANNEL_ID,
   BATCH2_CHANNEL_IDS,
   BATCH3_CHANNEL_IDS,
-  BATCH4_CHANNEL_IDS
+  BATCH4_CHANNEL_IDS,
+  BATCH5_CHANNEL_IDS
 } = process.env;
 
 // Parse batch channels (all support comma-separated multiple channels)
@@ -48,12 +49,14 @@ const parseChannelIds = (envVar) =>
 const batch2Channels = parseChannelIds(BATCH2_CHANNEL_IDS);
 const batch3Channels = parseChannelIds(BATCH3_CHANNEL_IDS);
 const batch4Channels = parseChannelIds(BATCH4_CHANNEL_IDS);
+const batch5Channels = parseChannelIds(BATCH5_CHANNEL_IDS);
 
 // Log configured channels at startup for debugging
 console.log('Configured batch channels:');
 console.log(`  Batch 2: ${batch2Channels.length} channel(s) - [${batch2Channels.join(', ')}]`);
 console.log(`  Batch 3: ${batch3Channels.length} channel(s) - [${batch3Channels.join(', ')}]`);
 console.log(`  Batch 4: ${batch4Channels.length} channel(s) - [${batch4Channels.join(', ')}]`);
+console.log(`  Batch 5: ${batch5Channels.length} channel(s) - [${batch5Channels.join(', ')}]`);
 
 // Create Express app
 const expressApp = express();
@@ -323,10 +326,10 @@ async function handleSlackEvent(event, requestId) {
       await dm({
         client: app.client,
         user: userId,
-        text: 'Thanks, ' + name + '. Which batch are you in? 2, 3, or 4?',
+        text: 'Thanks, ' + name + '. Which batch are you in? 2, 3, 4, or 5?',
         blocks: [{
           type: 'section',
-          text: { type: 'mrkdwn', text: `Thanks, ${name}. Which batch are you in? *2*, *3*, or *4*?` }
+          text: { type: 'mrkdwn', text: `Thanks, ${name}. Which batch are you in? *2*, *3*, *4*, or *5*?` }
         }]
       });
       return;
@@ -346,13 +349,16 @@ async function handleSlackEvent(event, requestId) {
       } else if (normalized === '4') {
         batchChannels = batch4Channels;
         batchName = 'Batch 4';
+      } else if (normalized === '5') {
+        batchChannels = batch5Channels;
+        batchName = 'Batch 5';
       }
 
       if (batchChannels.length === 0) {
         await dm({
           client: app.client,
           user: userId,
-          text: 'Please enter a valid batch number (2, 3, or 4).'
+          text: 'Please enter a valid batch number (2, 3, 4, or 5).'
         });
         return;
       }
